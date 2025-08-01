@@ -32,7 +32,7 @@ impl From<image::ImageError> for DaemonError {
 }
 
 impl<T> From<std::sync::PoisonError<T>> for DaemonError {
-    fn from(err: std::sync::PoisonError<T>) -> DaemonError {
+    fn from(_: std::sync::PoisonError<T>) -> DaemonError {
         DaemonError::PoisonError
     }
 }

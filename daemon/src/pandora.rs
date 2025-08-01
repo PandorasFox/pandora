@@ -21,6 +21,7 @@ pub struct ThreadHandle {
 impl ThreadHandle {
     fn new(pandora: Arc<Pandora>) -> ThreadHandle {
         let (sender, receiver) = channel::<ThreadCommand>();
+        // todo: channel::<String> for the thread responses/error messages
         let thread = thread::spawn(move || {
             RenderThread::new(receiver, pandora).start();
         });
@@ -138,7 +139,10 @@ impl Pandora {
         }
     }
 
-    // TODO: maybe figure out a way to in-place read-only copy/reference pass to the threads? would be nice..
+    // TODO: could do a read-only reference GenericImageView return - ownership weird though.
+    // i don't think there Needs to be a way to evict images from cache (annoying concurrency issues)
+    // "ooooh i can DOS your system by telling the daemon to load a buncha images" is that really worth considering? no. just let it oom 4head.
+    // alternatively, could offload the scaling step to this fetch, and then cache the scaled image..... hmm.....
     pub fn get_image (&self, img: String) -> Result<RgbaImage, DaemonError> {
         {
             let images = self.images.read()?;

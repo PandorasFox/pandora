@@ -39,7 +39,7 @@ fn get_outputs(conn: &mut Connection<State>) -> Vec<(WlOutput, Output)> {
     return state.outputs;
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct Mode {
     pub height: i32,
     pub width: i32,
@@ -55,7 +55,7 @@ pub struct Output {
     pub mode: Mode,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     outputs: Vec<(WlOutput, Output)>,
 }
