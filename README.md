@@ -10,3 +10,7 @@ implementation is still very in-progress! presently, it's just shy of actually l
 the basic functionality (from loading images to a central shared table, to IPC plumbing, basic commands, and the
 general daemon structure) is all there. the minimum functional product is still a while off, but I don't forsee
 any real blockers - I mostly just need to keep chipping away at implementation and testing :)
+
+a side-goal is to also add screen locking functionality to this. Theoretically, it shouldn't be that hard to
+have the daemon spawn some extra threads for the lockscreen surfaces & another to handle inputs (?).
+I poked at all of that for i3lock-color a decade ago, and things were wayyy shittier then, right?
