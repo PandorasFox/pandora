@@ -9,6 +9,7 @@ use wayrs_client::protocol::WlSurface;
 use wayrs_protocols::linux_dmabuf_v1::ZwpLinuxDmabufV1;
 use wayrs_protocols::wlr_layer_shell_unstable_v1::{ZwlrLayerSurfaceV1, ZwlrLayerShellV1, zwlr_layer_shell_v1::Layer};
 use wayrs_protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::Anchor;
+use wayrs_protocols::viewporter::{WpViewporter, WpViewport};
 
 // mostly boilerplate from wayrs examples, introduced to a hacksaw
 
@@ -22,16 +23,18 @@ pub struct WaylandState {
 #[derive(Copy, Clone)]
 pub struct WaylandGlobals {
     pub _output: WlOutput,
-    pub output_info: Mode,
+    pub output_info: OutputMode,
     pub shm: WlShm, // shared mem singleton
     pub _dma: ZwpLinuxDmabufV1,
     pub _compositor: WlCompositor,
     pub _layer_shell: ZwlrLayerShellV1,
     pub surface: WlSurface,
+    pub _viewporter: WpViewporter,
+    pub viewport: WpViewport,
 }
 
 #[derive(Copy, Clone, Debug, Default)]
-pub struct Mode {
+pub struct OutputMode {
     pub height: i32,
     pub width: i32,
     pub _refresh: i32, // 59.997Hz => 59_997 int
@@ -43,7 +46,7 @@ pub struct Output {
     pub name: String,
     pub desc: String,
     pub scale: Option<i32>,
-    pub mode: Mode,
+    pub mode: OutputMode,
 }
 
 fn layer_callback(mut ctx: EventCtx<WaylandState, ZwlrLayerSurfaceV1>) {
@@ -71,8 +74,10 @@ pub fn initialize_wayland_handles(conn: &mut Connection<WaylandState>, output: S
     let dma = conn.bind_singleton::<ZwpLinuxDmabufV1>(4..=5).unwrap();
     let layer_shell = conn.bind_singleton::<ZwlrLayerShellV1>(4..=5).unwrap();
     let compositor = conn.bind_singleton::<WlCompositor>(1..=6).unwrap();
+    let viewporter = conn.bind_singleton::<WpViewporter>(1..=1).unwrap();
 
     let surface = compositor.create_surface(conn);
+    let viewport = viewporter.get_viewport(conn, surface);
     //conn.blocking_roundtrip().unwrap();
     let layer_surface = layer_shell.get_layer_surface(conn, surface, Some(wl_output), Layer::Background, CString::new("pandora").unwrap());
     layer_surface.set_size(conn, width as u32, height as u32);
@@ -93,6 +98,8 @@ pub fn initialize_wayland_handles(conn: &mut Connection<WaylandState>, output: S
         _layer_shell: layer_shell,
         surface: surface,
         output_info: output_info.mode,
+        _viewporter: viewporter,
+        viewport: viewport,
     };
 }
 
@@ -142,7 +149,7 @@ fn wl_output_cb(ctx: EventCtx<WaylandState, WlOutput>) {
     match ctx.event {
         wl_output::Event::Geometry(_) => (),
         wl_output::Event::Mode(mode) => {
-            output.mode = Mode {height: mode.height, width: mode.width, _refresh: mode.refresh};
+            output.mode = OutputMode {height: mode.height, width: mode.width, _refresh: mode.refresh};
         }
         wl_output::Event::Done => output.done = true,
         wl_output::Event::Scale(scale) => output.scale = Some(scale),
