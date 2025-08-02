@@ -7,11 +7,14 @@ use crate::wl_session::{initialize_wayland_handles, OutputMode, WaylandGlobals, 
 use std::io::Write;
 use std::sync::mpsc::{Sender, Receiver};
 use std::sync::Arc;
+use std::time::Duration;
 use std::{fs::File, os::fd::OwnedFd};
 
 use wayrs_client::{Connection, EventCtx, IoMode};
 use wayrs_client::protocol::wl_shm::Format;
 use wayrs_client::protocol::WlSurface;
+use wayrs_client::protocol::WlCallback;
+use wayrs_protocols::viewporter::WpViewport;
 
 // note: output resize/mode-setting changes are currently not handled here
 // the "best" solution will probably involve a new command from the compositor agent
@@ -19,6 +22,9 @@ use wayrs_client::protocol::WlSurface;
 // currently, when my desktop sleeps for a while, it looks like my main monitor 'disconnects'
 // and then reconnects - and can't be recovered without restarting the daemon presently.
 // definitely work to be done ! 
+
+// also i really need to do a pass and make sure to properly use references on.... a lot of these functions, i think.....
+// definitely just relied on derive(copy, clone) l0l
 
 pub struct RenderThread {
     name: String,
@@ -29,13 +35,26 @@ pub struct RenderThread {
     globals: Option<WaylandGlobals>,
     // state below, ough
     render_state: Option<RenderState>,
+    raw_img: Option<RgbaImage>,
+}
+
+#[derive(Copy, Clone)]
+pub struct ScrollState {
+    start_pos: u32,
+    current_pos: u32,
+    end_pos: u32,
+    step: u32,
+    remaining_duration: Duration,
+    _num_frames: u32,
 }
 
 pub struct RenderState {
     mode: RenderMode,
     _img_path: String,
-    raw_img: RgbaImage,
     _buf_file: File,
+    scrolling: Option<ScrollState>,
+    crop_width: u32,
+    crop_height: u32,
 }
 
 impl RenderThread {
@@ -48,6 +67,7 @@ impl RenderThread {
             conn: conn,
             globals: None,
             render_state: None,
+            raw_img: None,
         }
     }
 
@@ -82,9 +102,10 @@ impl RenderThread {
         // todo: attach file/buffer to self?
         // need to do more work here for when we're switching images or whatever. cus uh. don't think that works rn
 
-        let globals = self.globals.as_mut().unwrap();
+        let globals = self.globals.take().unwrap();
 
         /* No longer scaling image with imageops - instead letting wp_viewport handle for us :)
+        // however, WP_viewport does Not like it if the image is too small.... might try this as a convenient upscale if needed?
         let scaled_img = scale_img_for_mode(
             &self.pandora.get_image(cmd.image.clone()).unwrap(),
             cmd.mode, globals.output_info);
@@ -105,7 +126,9 @@ impl RenderThread {
         
         let (crop_width, crop_height) = calculate_crop(cmd.mode, globals.output_info, img.clone());
 
-        match cmd.mode {
+        println!("> {}: cropping surface view to {crop_width} x {crop_height}", self.name);
+
+        let scroll_state = match cmd.mode {
             RenderMode::Static => {
                 globals.viewport.set_destination(&mut self.conn,
                     globals.output_info.width, globals.output_info.height,
@@ -121,51 +144,63 @@ impl RenderThread {
                     width_offset.into(), height_offset.into(),
                     crop_width.into(), crop_height.into(),
                 );
+                None
             }
-            RenderMode::ScrollingVertical(_offset) => {
-                globals.viewport.set_destination(&mut self.conn,
-                    globals.output_info.width, globals.output_info.height,
-                );
-
-                globals.viewport.set_source(&mut self.conn,
-                    wayrs_client::Fixed::ZERO, _offset.position.into(),
-                    crop_width.into(), crop_height.into(),
-                );
+            RenderMode::ScrollingVertical(offset) => {
+                Some(ScrollState {
+                    start_pos: offset,
+                    current_pos: offset,
+                    end_pos: offset,
+                    step: 0,
+                    remaining_duration: Duration::from_secs(0),
+                    _num_frames: 0,
+                })
             },
-            RenderMode::ScrollingLateral(_offset) => {
-                globals.viewport.set_destination(&mut self.conn,
-                    globals.output_info.width, globals.output_info.height,
-                );
-                globals.viewport.set_source(&mut self.conn,
-                    _offset.position.into(), wayrs_client::Fixed::ZERO,
-                    crop_width.into(), crop_height.into(),
-                );
+            RenderMode::ScrollingLateral(offset) => {
+                Some(ScrollState {
+                    start_pos: offset,
+                    current_pos: offset,
+                    end_pos: offset,
+                    step: 0,
+                    remaining_duration: Duration::from_secs(0),
+                    _num_frames: 0,
+                })
             },
         };
-
+        self.raw_img = Some(img);
         self.render_state = Some(RenderState {
             mode: cmd.mode,
             _img_path: cmd.image.clone(),
-            raw_img: img,
             _buf_file: file,
+            scrolling: scroll_state,
+            crop_width: crop_width,
+            crop_height: crop_height,
         });
+
+        if scroll_state.is_some() {
+            self.globals = Some(globals);
+            self.scroll_surface_to(scroll_state.unwrap().current_pos);
+        } 
 
         globals.surface.commit(&mut self.conn);
         self.conn.blocking_roundtrip().unwrap();
-    }
-
-    fn _surface_frame_tick_callback(_ctx: EventCtx<WaylandState, WlSurface>) {
-        // register this when we have updating to be doing / are Animating
-        // need to request another frame callback if we are still animating/scrolling!
-        todo!();
     }
 
     fn draw_loop(&mut self) {
         loop {
             self.conn.flush(IoMode::Blocking).unwrap();
             let received_events = self.conn.recv_events(IoMode::NonBlocking);
-            // todo clone state into dispatch
-            self.conn.dispatch_events(&mut WaylandState::default());
+            // set up dispatch state. animation_state is the only mut, rest are just refs we need.
+            let mut dispatch_state = WaylandState::default();
+            dispatch_state.render_state = self.render_state.take(); // must be put back!!
+            dispatch_state.viewport = Some(self.globals.as_ref().unwrap().viewport);
+            dispatch_state.surface = Some(self.globals.as_ref().unwrap().surface);
+            dispatch_state.output_info = Some(self.globals.as_ref().unwrap().output_info);
+
+            self.conn.dispatch_events(&mut dispatch_state);
+            // make sure to update state after callbacks
+            self.render_state = dispatch_state.render_state;
+
             if self.handle_inbound_commands() {
                 break;
             }
@@ -203,43 +238,147 @@ impl RenderThread {
         }
     }
 
-    fn scroll(&mut self, cmd: ScrollCommand) {
+    fn scroll_surface_to(&mut self, pos: u32) {
         let globals = self.globals.as_mut().unwrap();
-        let state = self.render_state.take().unwrap();
-        let (crop_width, crop_height) = calculate_crop(state.mode, globals.output_info, state.raw_img.clone());
+        let mut state = self.render_state.take().unwrap();
+        do_scroll_step(&mut self.conn, &mut state,
+            globals.viewport, globals.output_info, globals.surface, pos);
+        self.render_state = Some(state);
+    }
 
-        let scroll_pos = cmd.position.position; // teehee
-
-        match state.mode {
-            RenderMode::Static => {
-                // THIS SHOULD BE A NOP / INVALID COMMAND IDK
-            }
+    fn scroll(&mut self, cmd: ScrollCommand) {
+        let mut render_state = self.render_state.take().unwrap();
+        let mut scroll_state = render_state.scrolling.take().unwrap();
+        // validate command/position before we commit to scrolling
+        let valid = match render_state.mode {
+            RenderMode::Static => false, // nothing to do here!
             RenderMode::ScrollingVertical(_) => {
-                globals.viewport.set_destination(&mut self.conn,
-                    globals.output_info.width, globals.output_info.height,
-                );
-                globals.viewport.set_source(&mut self.conn,
-                    wayrs_client::Fixed::ZERO, scroll_pos.into(),
-                    crop_width.into(), crop_height.into(),
-                );
+                let end_bound = render_state.crop_height + cmd.position;
+                end_bound <= self.raw_img.as_ref().unwrap().height()
             },
             RenderMode::ScrollingLateral(_) => {
-                globals.viewport.set_destination(&mut self.conn,
-                    globals.output_info.width, globals.output_info.height,
-                );
-                globals.viewport.set_source(&mut self.conn,
-                    scroll_pos.into(), wayrs_client::Fixed::ZERO,
-                    crop_width.into(), crop_height.into(),
-                );
-            },
+                let end_bound = render_state.crop_width + cmd.position;
+                end_bound <= self.raw_img.as_ref().unwrap().width()
+            }
         };
-        //globals.surface.damage(&mut self.conn, 0, 0, 3440, 1440); // <- not needed?? cool.
-        globals.surface.commit(&mut self.conn);
-        self.conn.blocking_roundtrip().unwrap();
-        self.render_state = Some(state);
+        if !valid {
+            println!("would scroll past end and explode");
+            render_state.scrolling = Some(scroll_state);
+            self.render_state = Some(render_state);
+            return;
+        }
+
+        scroll_state.start_pos = scroll_state.current_pos; // current pos should always be updated in scroll_to
+        scroll_state.end_pos = cmd.position;
+        scroll_state.remaining_duration = Duration::from_millis(1_500);
+        // should maybe figure out "number of estimated frames based on refresh rate and duration"
+        // and then step-per-frame based off end pos / start pos / etc
+        // need to also maybe interp the step along a curve...... complicated!
+        // will probably just need to go look at niri to figure out how the scroll anims are interp'd
+        // since we want to mimic that for now, I guess
+        // (might cause motion sickness otherwise, idk)
+        scroll_state.step = 1; // TODO FIGURE OUT :')
+        render_state.scrolling = Some(scroll_state);
+        self.render_state = Some(render_state);
+
+        self.start_scroll_anim();
+    }
+
+    fn start_scroll_anim(&mut self) {
+        let mut render_state = self.render_state.take().unwrap();
+        let globals = self.globals.as_ref().unwrap();
+
+        println!("> {}: animation starting. start_pos: {}, end_pos: {}",
+            self.name,
+            render_state.scrolling.unwrap().start_pos,
+            render_state.scrolling.unwrap().end_pos);
+    
+        globals.surface.frame_with_cb(&mut self.conn, frame_callback);
+        let next_pos = calc_next_pos(&render_state);
+        do_scroll_step(&mut self.conn, &mut render_state,
+            globals.viewport,
+            globals.output_info,
+            globals.surface,
+            next_pos,
+        );
+        self.render_state = Some(render_state);
     }
 }
 
+fn calc_next_pos(render_state: &RenderState) -> u32 {
+    let scroll_state = render_state.scrolling.as_ref().unwrap();
+    // need to handle overshoot when step is not 1 lol
+    let mut maybe_pos = scroll_state.current_pos;
+    if scroll_state.end_pos > scroll_state.current_pos {
+        maybe_pos = scroll_state.current_pos + scroll_state.step;
+        if maybe_pos > scroll_state.end_pos {
+            maybe_pos = scroll_state.end_pos;
+        }
+    } else if scroll_state.end_pos < scroll_state.current_pos {
+        maybe_pos = scroll_state.current_pos - scroll_state.step;
+        if maybe_pos < scroll_state.end_pos {
+            maybe_pos = scroll_state.end_pos;
+        }
+    }
+    return maybe_pos;
+}
+
+fn do_scroll_step(conn: &mut Connection<WaylandState>,
+    render_state: &mut RenderState,
+    viewport: WpViewport,
+    output_info: OutputMode,
+    surface: WlSurface,
+    next_pos: u32,
+) {
+    //println!("scrolling to {next_pos}");
+    match render_state.mode {
+        RenderMode::Static => {
+            // THIS SHOULD BE A NOP / INVALID COMMAND IDK
+        }
+        RenderMode::ScrollingVertical(_) => {
+            viewport.set_destination(conn,
+                output_info.width, output_info.height,
+            );
+            viewport.set_source(conn,
+                wayrs_client::Fixed::ZERO, next_pos.into(),
+                render_state.crop_width.into(), render_state.crop_height.into(),
+            );
+        },
+        RenderMode::ScrollingLateral(_) => {
+            viewport.set_destination(conn,
+                output_info.width, output_info.height,
+            );
+            viewport.set_source(conn,
+                next_pos.into(), wayrs_client::Fixed::ZERO,
+                render_state.crop_width.into(), render_state.crop_height.into(),
+            );
+        },
+    };
+    let mut scroll_state = render_state.scrolling.take().unwrap();
+    scroll_state.current_pos = next_pos;
+    render_state.scrolling = Some(scroll_state);
+    //globals.surface.damage(&mut self.conn, 0, 0, 3440, 1440); // <- not needed?? cool.
+    surface.commit(conn);
+    conn.blocking_roundtrip().unwrap();
+}
+
+fn frame_callback(ctx: EventCtx<WaylandState, WlCallback>) {
+    let wl_state = ctx.state;
+    
+    let mut render_state = wl_state.render_state.take().unwrap();
+    let next_pos = calc_next_pos(&render_state);
+    if next_pos != render_state.scrolling.unwrap().current_pos {
+        wl_state.surface.unwrap().frame_with_cb(ctx.conn, frame_callback);
+        do_scroll_step(ctx.conn, &mut render_state,
+            wl_state.viewport.unwrap(), wl_state.output_info.unwrap(), wl_state.surface.unwrap(), next_pos
+        );
+    }
+
+    wl_state.render_state = Some(render_state);
+}
+
+// todo: genericize and move into a util file
+// (agent will probably want to do these calculations later)
 fn calculate_crop(mode: RenderMode, output_info: OutputMode, img: RgbaImage) -> ( u32,  u32) {
     // scale factor of image to output
     // image bigger than output => we scale up, vice versa we scale down
@@ -268,7 +407,6 @@ fn calculate_crop(mode: RenderMode, output_info: OutputMode, img: RgbaImage) -> 
         },
     }
 }
-
 
 fn _get_scaled_dimensions(mode: RenderMode, output_width: i32, output_height: i32, img_width: u32, img_height: u32) -> (i32, i32) {
     let width_ratio = output_width as f64 / img_width as f64;
