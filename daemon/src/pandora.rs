@@ -1,32 +1,43 @@
 use crate::ipc::IpcHandler;
 use crate::render::{RenderThread};
+use crate::wl_session::WaylandState;
 use pithos::commands::{CommandType, ConfigReloadCommand, DaemonCommand, InfoCommand, LoadImageCommand, ThreadCommand};
 use pithos::error::{CommandError, DaemonError};
 use pithos::sockets::write_response_to_client_socket;
 
 use std::collections::HashMap;
 use std::os::unix::net::{UnixStream};
-use std::sync::{Arc, RwLock};
-use std::sync::mpsc::{channel, Sender};
+use std::sync::{Arc, Mutex, RwLock};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 
 use image::{RgbaImage, ImageReader};
+use wayrs_client::Connection;
 
 // daemon utility struct(s)
 pub struct ThreadHandle {
     sender: Sender<ThreadCommand>,
+    _receiver: Arc<Mutex<Receiver<String>>>,
     thread: JoinHandle<()>,
 }
 
 impl ThreadHandle {
     fn new(pandora: Arc<Pandora>) -> ThreadHandle {
-        let (sender, receiver) = channel::<ThreadCommand>();
-        // todo: channel::<String> for the thread responses/error messages
+        let (host_sender, thread_receiver) = channel::<ThreadCommand>();
+        let (thread_sender, host_receiver) = channel::<String>();
+        let conn = Connection::<WaylandState>::connect().unwrap();
+
         let thread = thread::spawn(move || {
-            RenderThread::new(receiver, pandora).start();
+            RenderThread::new(
+                thread_receiver,
+                thread_sender,
+                pandora,
+                conn,
+            ).start();
         });
         return ThreadHandle {
-            sender: sender,
+            sender: host_sender,
+            _receiver: Arc::new(Mutex::new(host_receiver)),
             thread: thread,
         };
     }

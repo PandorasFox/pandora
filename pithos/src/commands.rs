@@ -72,8 +72,7 @@ pub enum ThreadCommand {
 // TODO TESTS =)
 #[cfg(test)]
 mod tests {
-    use super::*;
-
+    //use super::*;
     #[test]
     fn it_works() {
         let result = 2 + 2;

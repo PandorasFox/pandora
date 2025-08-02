@@ -2,67 +2,42 @@ use image::imageops::FilterType;
 use image::RgbaImage;
 use pithos::commands::{RenderCommand, RenderMode, ScrollCommand, ThreadCommand};
 use crate::pandora::Pandora;
-use crate::wl_session::{Mode, State};
+use crate::wl_session::{initialize_wayland_handles, Mode, WaylandGlobals, WaylandState};
 
 use std::io::Write;
+use std::sync::mpsc::{Sender, Receiver};
 use std::sync::Arc;
-use std::{ffi::CString, fs::File, os::fd::OwnedFd, sync::mpsc::Receiver};
+use std::{fs::File, os::fd::OwnedFd};
 
-// todo: tidy up these imports once i'm done hackin'
 use wayrs_client::{Connection, EventCtx, IoMode};
 use wayrs_client::protocol::wl_shm::Format;
-use wayrs_client::protocol::wl_compositor::WlCompositor;
-use wayrs_client::protocol::wl_output::WlOutput;
-use wayrs_client::protocol::wl_shm::WlShm;
 use wayrs_client::protocol::WlSurface;
-use wayrs_client::protocol::WlBuffer;
-use wayrs_protocols::wlr_layer_shell_unstable_v1::{ZwlrLayerShellV1, ZwlrLayerSurfaceV1, zwlr_layer_shell_v1::Layer};
-use wayrs_protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::Anchor;
-use wayrs_protocols::linux_dmabuf_v1::ZwpLinuxDmabufV1;
-
-
 
 // note: output resize/mode-setting changes are currently not handled here
 // the "best" solution will probably involve a new command from the compositor agent
 // that will be sent upon an output mode/resolution change
-
-
-struct WaylandState {
-    conn: Connection<State>,
-    output: WlOutput,
-    output_info: Mode,
-    shm: WlShm, // shared mem singleton
-    compositor: WlCompositor,
-    layer_shell: ZwlrLayerShellV1,
-    surface: WlSurface,
-}
+// currently, when my desktop sleeps for a while, it looks like my main monitor 'disconnects'
+// and then reconnects - and can't be recovered without restarting the daemon presently.
+// definitely work to be done ! 
 
 pub struct RenderThread {
-    pub receiver: Receiver<ThreadCommand>,
+    receiver: Receiver<ThreadCommand>,
+    _sender: Sender<String>, 
     pandora: Arc<Pandora>,
+    conn: Connection<WaylandState>,
+    globals: Option<WaylandGlobals>,
     // state below, ough
-    state: Option<WaylandState>,
-}
-
-fn layer_callback(mut ctx: EventCtx<State, ZwlrLayerSurfaceV1>) {
-    // none of my debug prints in here ever popped, presumably because the execution context
-    // didn't have a stdout or something. pretty sure this works right for just yolo-ACKing
-    // these events. silly protocol.
-    let layer: ZwlrLayerSurfaceV1 = ctx.proxy;
-    match ctx.event {
-        wayrs_protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::Event::Configure(args) => {
-            layer.ack_configure(&mut ctx.conn, args.serial);
-        },
-        _ => (),
-    }
+    //state: Option<WaylandState>,
 }
 
 impl RenderThread {
-    pub fn new(recv: Receiver<ThreadCommand>, pandora: Arc<Pandora>) -> RenderThread {
+    pub fn new(recv: Receiver<ThreadCommand>, send: Sender<String>, pandora: Arc<Pandora>, conn: Connection<WaylandState>) -> RenderThread {
         return RenderThread {
             receiver: recv,
+            _sender: send,
             pandora: pandora,
-            state: None,
+            conn: conn,
+            globals: None,
         }
     }
 
@@ -82,67 +57,24 @@ impl RenderThread {
         self.draw_loop();
     }
 
-    fn initialize_wayland_handles(&mut self, output: String) {
-        // should make calls to wayland session, get output names, match against output
-        // and initialize The Wayland Surface Buffer for this thread
-        // this is some load-bearing hack work rn and needs to get cleaned up before a Big Release
-        let mut conn = Connection::<State>::connect().unwrap();
-        let (wl_output, output_info) = crate::wl_session::get_wloutput_by_name(&mut conn, output);
-
-        let shm = conn.bind_singleton::<WlShm>(2..=2).unwrap();
-        // TODO: vibe check if dma is easier/better to use in any meaningful way
-        // (it's hopefully widely available?)
-        // the current shm stuff seems to work fine enough for now, at least
-        let _dma = conn.bind_singleton::<ZwpLinuxDmabufV1>(4..=5).unwrap();
-        let layer_shell = conn.bind_singleton::<ZwlrLayerShellV1>(4..=5).unwrap();
-        let compositor = conn.bind_singleton::<WlCompositor>(1..=6).unwrap();
-        let surface = compositor.create_surface(&mut conn);
-
-        let width = output_info.mode.width;
-        let height = output_info.mode.height;
-
-        conn.blocking_roundtrip().unwrap();
-
-        let layer_surface = layer_shell.get_layer_surface(&mut conn, surface, Some(wl_output), Layer::Background, CString::new("pandora").unwrap());
-        layer_surface.set_size(&mut conn, width as u32, height as u32);
-        layer_surface.set_anchor(&mut conn, Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right );
-        layer_surface.set_exclusive_zone(&mut conn, -1);
-        // set callback handler for 'layer_surface.configure' event
-        conn.set_callback_for(layer_surface, layer_callback);
-        conn.blocking_roundtrip().unwrap();
-        surface.commit(&mut conn);
-        conn.blocking_roundtrip().unwrap();
-
-        let state = WaylandState {
-            conn: conn,
-            output: wl_output,
-            shm: shm,
-            compositor: compositor,
-            layer_shell: layer_shell,
-            surface: surface,
-            output_info: output_info.mode,
-        };
-
-        self.state = Some(state);
-    }
-
+    // i think all the as i32/u32's sprinkled around are going to cause problems
+    // one day when someone uses some really fuckin' big images. whatever.
     fn render(&mut self, cmd: RenderCommand) {
-        // i think all the as i32/u32's sprinkled around are going to cause problems
-        // one day when someone uses some really fuckin' big images. whatever.
-
         // todo: generally rewrite the buffer management >.<
         // will eventually want to / need to support more pixel formats (at least for HDR)....
-        // thankfully I have an hdr monitor :) ... for now.... rgba8. that's fine.
-
-        if self.state.is_none() {
-            self.initialize_wayland_handles(cmd.output.clone());
+        // thankfully I have an hdr monitor :) ... but for now.... rgba8. that's fine.
+        if self.globals.is_none() {
+            let globals = initialize_wayland_handles(&mut self.conn, cmd.output.clone());
+            self.globals = Some(globals);
         }
+        // todo: attach file/buffer to self?
+        // need to do more work here for when we're switching images or whatever. cus uh. don't think that works rn
 
-        let state = self.state.as_mut().unwrap();
+        let globals = self.globals.as_mut().unwrap();
 
         let scaled_img = scale_img_for_mode(
             &self.pandora.get_image(cmd.image).unwrap(),
-            cmd.mode, state.output_info);
+            cmd.mode, globals.output_info);
 
         let bytes_per_row: i32 = scaled_img.width() as i32 * 4;
         let total_bytes: i32 = bytes_per_row * scaled_img.height() as i32;
@@ -150,25 +82,29 @@ impl RenderThread {
         // note: need to preserve some of this so that subsequent Render commands can properly swap things out
 
         let file = tempfile::tempfile().expect("creating tempfile for shared mem failed");
-        
+
         img_into_buffer(&scaled_img, &file);
 
-        let pool = state.shm.create_pool(&mut state.conn, OwnedFd::from(file), total_bytes);
-        let buf = pool.create_buffer(&mut state.conn, 0, scaled_img.width() as i32, scaled_img.height() as i32, bytes_per_row, Format::Argb8888 );
-        state.surface.attach(&mut state.conn, Some(buf), 0, 0); //hardcoded 0s l0l
+        let pool = globals.shm.create_pool(&mut self.conn, OwnedFd::from(file), total_bytes);
+        let buf = pool.create_buffer(&mut self.conn, 0, scaled_img.width() as i32, scaled_img.height() as i32, bytes_per_row, Format::Argb8888 );
+        globals.surface.attach(&mut self.conn, Some(buf), 0, 0); //hardcoded 0s l0l
         // TODO: parse cmd.mode => set initial scroll offset if necessary
         //state.surface.offset(&mut state.conn, 0, 0);
-        state.surface.commit(&mut state.conn);
-        state.conn.blocking_roundtrip().unwrap();
+        globals.surface.commit(&mut self.conn);
+        self.conn.blocking_roundtrip().unwrap();
+    }
+
+    fn _surface_frame_tick_callback(_ctx: EventCtx<WaylandState, WlSurface>) {
+        // register this when we have updating to be doing / are Animating
+        // need to request another frame callback if we are still animating/scrolling!
+        todo!();
     }
 
     fn draw_loop(&mut self) {
         loop {
-            let mut state = self.state.take().unwrap();
-            state.conn.flush(IoMode::Blocking).unwrap();
-            state.conn.recv_events(IoMode::Blocking).unwrap();
-            state.conn.dispatch_events(&mut State::default());
-            self.state = Some(state);
+            self.conn.flush(IoMode::Blocking).unwrap();
+            self.conn.recv_events(IoMode::Blocking).unwrap();
+            self.conn.dispatch_events(&mut WaylandState::default());
             if self.handle_inbound_commands() {
                 break;
             }
