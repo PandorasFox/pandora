@@ -1,3 +1,5 @@
+use crate::render::RenderState;
+
 use std::ffi::CString;
 
 use wayrs_client::global::{GlobalExt};
@@ -11,13 +13,17 @@ use wayrs_protocols::wlr_layer_shell_unstable_v1::{ZwlrLayerSurfaceV1, ZwlrLayer
 use wayrs_protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::Anchor;
 use wayrs_protocols::viewporter::{WpViewporter, WpViewport};
 
+
 // mostly boilerplate from wayrs examples, introduced to a hacksaw
 
 #[derive(Default)]
 pub struct WaylandState {
     //pub globals: Option<WaylandGlobals>,
     pub outputs: Vec<(WlOutput, Output)>,
-    pub _animation_state: Option<String>, // placeholder type
+    pub render_state: Option<RenderState>, // placeholder type
+    pub viewport: Option<WpViewport>,
+    pub surface: Option<WlSurface>,
+    pub output_info: Option<OutputMode>,
 }
 
 #[derive(Copy, Clone)]
@@ -50,9 +56,6 @@ pub struct Output {
 }
 
 fn layer_callback(mut ctx: EventCtx<WaylandState, ZwlrLayerSurfaceV1>) {
-    // none of my debug prints in here ever popped, presumably because the execution context
-    // didn't have a stdout or something. pretty sure this works right for just yolo-ACKing
-    // these events. silly protocol.
     let layer: ZwlrLayerSurfaceV1 = ctx.proxy;
     match ctx.event {
         wayrs_protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::Event::Configure(args) => {
@@ -78,15 +81,14 @@ pub fn initialize_wayland_handles(conn: &mut Connection<WaylandState>, output: S
 
     let surface = compositor.create_surface(conn);
     let viewport = viewporter.get_viewport(conn, surface);
-    //conn.blocking_roundtrip().unwrap();
     let layer_surface = layer_shell.get_layer_surface(conn, surface, Some(wl_output), Layer::Background, CString::new("pandora").unwrap());
+    
     layer_surface.set_size(conn, width as u32, height as u32);
     layer_surface.set_anchor(conn, Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right );
     layer_surface.set_exclusive_zone(conn, -1);
     
     // set callback handler for 'layer_surface.configure' event
     conn.set_callback_for(layer_surface, layer_callback);
-    //conn.blocking_roundtrip().unwrap();
     surface.commit(conn);
     conn.blocking_roundtrip().unwrap();
 

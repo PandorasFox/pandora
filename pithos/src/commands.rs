@@ -1,17 +1,11 @@
 use serde::{Serialize, Deserialize};
 // ===== TRAITS AND MISC DATA STRUCTS =====
 #[derive(Serialize, Deserialize, Copy, Clone, Debug)]
-pub struct ScrollOffset {
-    // the 'start' position into the view, in pixels.
-    pub position: i32,
-}
-
-#[derive(Serialize, Deserialize, Copy, Clone, Debug)]
 pub enum RenderMode {
     // single image
     Static, // will scale up/down to fill
-    ScrollingVertical(ScrollOffset),
-    ScrollingLateral(ScrollOffset),
+    ScrollingVertical(u32),
+    ScrollingLateral(u32),
     // scrolling both directions will be trickier to implement. later problem.
 }
 
@@ -46,7 +40,7 @@ pub struct StopCommand {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ScrollCommand {
     pub output: String,
-    pub position: ScrollOffset,
+    pub position: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
