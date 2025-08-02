@@ -7,6 +7,8 @@ use crate::wl_session::{initialize_wayland_handles, Mode, WaylandGlobals, Waylan
 use std::io::Write;
 use std::sync::mpsc::{Sender, Receiver};
 use std::sync::Arc;
+use std::thread::sleep;
+use std::time;
 use std::{fs::File, os::fd::OwnedFd};
 
 use wayrs_client::{Connection, EventCtx, IoMode};
@@ -76,6 +78,8 @@ impl RenderThread {
             &self.pandora.get_image(cmd.image).unwrap(),
             cmd.mode, globals.output_info);
 
+        println!("scaled image to {} x {}", scaled_img.width(), scaled_img.height());
+
         let bytes_per_row: i32 = scaled_img.width() as i32 * 4;
         let total_bytes: i32 = bytes_per_row * scaled_img.height() as i32;
 
@@ -88,10 +92,43 @@ impl RenderThread {
         let pool = globals.shm.create_pool(&mut self.conn, OwnedFd::from(file), total_bytes);
         let buf = pool.create_buffer(&mut self.conn, 0, scaled_img.width() as i32, scaled_img.height() as i32, bytes_per_row, Format::Argb8888 );
         globals.surface.attach(&mut self.conn, Some(buf), 0, 0); //hardcoded 0s l0l
-        // TODO: parse cmd.mode => set initial scroll offset if necessary
-        //state.surface.offset(&mut state.conn, 0, 0);
         globals.surface.commit(&mut self.conn);
         self.conn.blocking_roundtrip().unwrap();
+        match cmd.mode {
+            RenderMode::Static => (),
+            RenderMode::ScrollingVertical(offset) => {
+                globals.surface.offset(&mut self.conn, 0, offset.position)
+            },
+            RenderMode::ScrollingLateral(offset) => {
+                globals.surface.offset(&mut self.conn, offset.position, 0)
+            },
+        };
+        globals.surface.commit(&mut self.conn);
+        self.conn.blocking_roundtrip().unwrap();
+        loop {
+            // for the life of me, I cannot figure out why adjusting the offset
+            // doesn't actually move the buffer/surface around. i'm doing *something* wrong, most definitely....
+            println!("0 0");
+            globals.surface.offset(&mut self.conn, 0, 0);
+            globals.surface.damage(&mut self.conn, 0, 0, 3440, 1440);
+            globals.surface.commit(&mut self.conn);
+            self.conn.blocking_roundtrip().unwrap();
+            sleep(time::Duration::from_secs(2));
+            
+            println!("0 25");
+            globals.surface.offset(&mut self.conn, 0, 25);
+            globals.surface.damage(&mut self.conn, 0, 0, 3440, 1440);
+            globals.surface.commit(&mut self.conn);
+            self.conn.blocking_roundtrip().unwrap();
+            sleep(time::Duration::from_secs(2));
+
+            println!("0 -25");
+            globals.surface.offset(&mut self.conn, 0, -25);
+            globals.surface.damage(&mut self.conn, 0, 0, 3440, 1440);
+            globals.surface.commit(&mut self.conn);
+            self.conn.blocking_roundtrip().unwrap();
+            sleep(time::Duration::from_secs(2));
+        }
     }
 
     fn _surface_frame_tick_callback(_ctx: EventCtx<WaylandState, WlSurface>) {

@@ -1,4 +1,4 @@
-use pithos::commands::{CommandType, ConfigReloadCommand, DaemonCommand, InfoCommand, LoadImageCommand, RenderCommand, RenderMode, ScrollCommand, ScrollPosition, StopCommand, ThreadCommand};
+use pithos::commands::{CommandType, ConfigReloadCommand, DaemonCommand, InfoCommand, LoadImageCommand, RenderCommand, RenderMode, ScrollCommand, ScrollOffset, StopCommand, ThreadCommand};
 
 use clap::{arg, Command, ArgMatches};
 
@@ -28,8 +28,8 @@ fn cli() -> Command {
         .arg(arg!(<mode> "render mode to use for the given image (static, scroll_vertical, scroll_lateral)")
                 .value_parser(["static", "scroll_vertical", "scroll_lateral"])
             )
-        .arg(arg!([start] "initial start scroll value when mode is a scroll mode").value_parser(clap::value_parser!(i32)))
-        .arg(arg!([end] "initial end scroll value when mode is a scroll mode").value_parser(clap::value_parser!(i32)))
+        .arg(arg!([position] "initial scroll position when mode is a scrolling mode").value_parser(clap::value_parser!(i32)))
+//        .arg(arg!([end] "initial end scroll value when mode is a scroll mode").value_parser(clap::value_parser!(i32)))
         .arg_required_else_help(true)
     )
     
@@ -41,8 +41,8 @@ fn cli() -> Command {
     .subcommand(Command::new("scroll")
         .about("set the scrolling position of the given output along the configured dimension")
         .arg(arg!(<output> "output name of the canvas to scroll"))
-        .arg(arg!(<start> "start of the scroll position").value_parser(clap::value_parser!(i32)))
-        .arg(arg!(<end> "end of the scroll position").value_parser(clap::value_parser!(i32)))
+        .arg(arg!(<position> "scroll position in pixels").value_parser(clap::value_parser!(i32)))
+//        .arg(arg!(<end> "end of the scroll position").value_parser(clap::value_parser!(i32)))
     )
 }
 
@@ -98,14 +98,14 @@ fn main() {
             let mode = match extract_str(sub_matches, "mode", "render mode is required").as_str() {
                 "static" => RenderMode::Static,
                 "scroll_vertical" => {
-                    let start = extract_int(sub_matches, "start", "start scroll value should not be empty");
-                    let end = extract_int(sub_matches, "end", "end scroll value should not be empty");
-                    RenderMode::ScrollingVertical(ScrollPosition { start: start, end: end })
+                    let position = extract_int(sub_matches, "position", "scroll value should not be empty");
+                    //let end = extract_int(sub_matches, "end", "end scroll value should not be empty");
+                    RenderMode::ScrollingVertical(ScrollOffset { position: position })
                 }
                 "scroll_lateral" => {
-                    let start = extract_int(sub_matches, "start", "start scroll value should not be empty");
-                    let end = extract_int(sub_matches, "end", "end scroll value should not be empty");
-                    RenderMode::ScrollingLateral(ScrollPosition { start: start, end: end })
+                    let position = extract_int(sub_matches, "position", "scroll value should not be empty");
+                    //let end = extract_int(sub_matches, "end", "end scroll value should not be empty");
+                    RenderMode::ScrollingLateral(ScrollOffset { position: position })
                 },
                 _ => unreachable!(),
             };
@@ -123,12 +123,11 @@ fn main() {
         }
         Some(("scroll", sub_matches)) => {
             let output = extract_str(sub_matches, "output", "output name is required");
-            let start = extract_int(sub_matches, "start", "start scroll value should not be empty");
-            let end = extract_int(sub_matches, "end", "end scroll value should not be empty");
-            assert!(start < end);
-            let position = ScrollPosition {
-                start: start,
-                end: end,
+            let pos = extract_int(sub_matches, "position", "scroll value should not be empty");
+            //let end = extract_int(sub_matches, "end", "end scroll value should not be empty");
+            //assert!(start < end);
+            let position = ScrollOffset {
+                position: pos,
             };
 
             cmd = Some(CommandType::Tc(ThreadCommand::Scroll(
