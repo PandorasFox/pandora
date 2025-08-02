@@ -23,6 +23,7 @@ use wayrs_client::protocol::WlSurface;
 // definitely work to be done ! 
 
 pub struct RenderThread {
+    name: String,
     receiver: Receiver<ThreadCommand>,
     _sender: Sender<String>, 
     pandora: Arc<Pandora>,
@@ -33,8 +34,9 @@ pub struct RenderThread {
 }
 
 impl RenderThread {
-    pub fn new(recv: Receiver<ThreadCommand>, send: Sender<String>, pandora: Arc<Pandora>, conn: Connection<WaylandState>) -> RenderThread {
+    pub fn new(output: String, recv: Receiver<ThreadCommand>, send: Sender<String>, pandora: Arc<Pandora>, conn: Connection<WaylandState>) -> RenderThread {
         return RenderThread {
+            name: output,
             receiver: recv,
             _sender: send,
             pandora: pandora,
@@ -57,6 +59,7 @@ impl RenderThread {
             }
         }
         self.draw_loop();
+        println!("> {}: goodbye!", self.name);
     }
 
     // i think all the as i32/u32's sprinkled around are going to cause problems
@@ -78,7 +81,7 @@ impl RenderThread {
             &self.pandora.get_image(cmd.image).unwrap(),
             cmd.mode, globals.output_info);
 
-        println!("scaled image to {} x {}", scaled_img.width(), scaled_img.height());
+        println!("> {}: scaled image to {} x {}", self.name, scaled_img.width(), scaled_img.height());
 
         let bytes_per_row: i32 = scaled_img.width() as i32 * 4;
         let total_bytes: i32 = bytes_per_row * scaled_img.height() as i32;
@@ -105,26 +108,21 @@ impl RenderThread {
         };
         globals.surface.commit(&mut self.conn);
         self.conn.blocking_roundtrip().unwrap();
+        return;
+        unreachable!();
         loop {
             // for the life of me, I cannot figure out why adjusting the offset
-            // doesn't actually move the buffer/surface around. i'm doing *something* wrong, most definitely....
-            println!("0 0");
-            globals.surface.offset(&mut self.conn, 0, 0);
-            globals.surface.damage(&mut self.conn, 0, 0, 3440, 1440);
-            globals.surface.commit(&mut self.conn);
-            self.conn.blocking_roundtrip().unwrap();
-            sleep(time::Duration::from_secs(2));
-            
+            // doesn't actually move the buffer/surface around. i'm doing *something* wrong, most definitely....            
             println!("0 25");
             globals.surface.offset(&mut self.conn, 0, 25);
-            globals.surface.damage(&mut self.conn, 0, 0, 3440, 1440);
+            globals.surface.damage_buffer(&mut self.conn, 0, 0, scaled_img.width() as i32, scaled_img.height() as i32);
             globals.surface.commit(&mut self.conn);
             self.conn.blocking_roundtrip().unwrap();
             sleep(time::Duration::from_secs(2));
 
             println!("0 -25");
             globals.surface.offset(&mut self.conn, 0, -25);
-            globals.surface.damage(&mut self.conn, 0, 0, 3440, 1440);
+            globals.surface.damage_buffer(&mut self.conn, 0, 0, scaled_img.width() as i32, scaled_img.height() as i32);
             globals.surface.commit(&mut self.conn);
             self.conn.blocking_roundtrip().unwrap();
             sleep(time::Duration::from_secs(2));
@@ -140,10 +138,15 @@ impl RenderThread {
     fn draw_loop(&mut self) {
         loop {
             self.conn.flush(IoMode::Blocking).unwrap();
-            self.conn.recv_events(IoMode::Blocking).unwrap();
+            let received_events = self.conn.recv_events(IoMode::NonBlocking);
+            // todo clone state into dispatch
             self.conn.dispatch_events(&mut WaylandState::default());
             if self.handle_inbound_commands() {
                 break;
+            }
+            if received_events.is_err() {
+                // no events on last poll, should sleep if not animating - need to figure out a better way to
+                // lazily block on both the receiver and wayland connection events
             }
         }
     }

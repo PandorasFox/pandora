@@ -22,13 +22,14 @@ pub struct ThreadHandle {
 }
 
 impl ThreadHandle {
-    fn new(pandora: Arc<Pandora>) -> ThreadHandle {
+    fn new(output: String, pandora: Arc<Pandora>) -> ThreadHandle {
         let (host_sender, thread_receiver) = channel::<ThreadCommand>();
         let (thread_sender, host_receiver) = channel::<String>();
         let conn = Connection::<WaylandState>::connect().unwrap();
 
         let thread = thread::spawn(move || {
             RenderThread::new(
+                output,
                 thread_receiver,
                 thread_sender,
                 pandora,
@@ -120,7 +121,7 @@ impl Pandora {
     }
 
     fn spawn_thread(&self, output: String, c: ThreadCommand) -> Result<&str, DaemonError> {
-        let thread = ThreadHandle::new(Arc::new(self.clone()));
+        let thread = ThreadHandle::new(output.clone(), Arc::new(self.clone()));
         thread.sender.send(c).expect("could not send initial command to thread after spawning");
         {
             let mut write_threads = self.threads.write()?;
@@ -218,7 +219,11 @@ impl Pandora {
     }
 
     fn handle_cmd(&self, cmd: CommandType) -> Result<&str, DaemonError> {
-        dbg!(cmd.clone());
+        // todo: add a proper real global verbose flag
+        // (after I refactor the cli binary into this one and shim in the message-sending so it's all one binary)
+        if false {
+            dbg!(cmd.clone());
+        }
         return match cmd {
             CommandType::Dc(dc) => self.handle_daemon_command(dc),
             // CommandType::Ac(ac) => {}
