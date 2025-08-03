@@ -308,6 +308,7 @@ impl RenderThread {
 fn calc_next_pos(render_state: &RenderState) -> u32 {
     let scroll_state = render_state.scrolling.as_ref().unwrap();
     // need to handle overshoot when step is not 1 lol
+    // also TODO: figure out how to interp from (start_pos, end_pos) based on duration?
     let mut maybe_pos = scroll_state.current_pos;
     if scroll_state.end_pos > scroll_state.current_pos {
         maybe_pos = scroll_state.current_pos + scroll_state.step;
