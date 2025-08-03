@@ -37,5 +37,3 @@ that from its wayland event stream)
 the agent thread
 * [session lock nonsense](https://wayland.app/protocols/ext-session-lock-v1) honestly seems spookily straightforward for letting us reuse the
 existing (dma)bufs
-* not currently sure why, but starting a render thread at all spikes memory usage from ~63KiB to 138MiB, even if the thread just sets up its
-wayland connection and then exits - profiling makes it look like the connection ring buffer might be why?

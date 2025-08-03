@@ -19,7 +19,7 @@ use wayrs_protocols::viewporter::{WpViewporter, WpViewport};
 #[derive(Default)]
 pub struct WaylandState {
     //pub globals: Option<WaylandGlobals>,
-    pub outputs: Vec<(WlOutput, Output)>,
+    pub outputs: Option<Vec<(WlOutput, Output)>>,
     pub render_state: Option<RenderState>, // placeholder type
     pub viewport: Option<WpViewport>,
     pub surface: Option<WlSurface>,
@@ -131,19 +131,19 @@ fn get_outputs(conn: &mut Connection<WaylandState>) -> Vec<(WlOutput, Output)> {
     conn.flush(IoMode::Blocking).unwrap();
 
     let mut state = WaylandState::default();
-    state.outputs = outputs;
+    state.outputs = Some(outputs);
 
-    while !state.outputs.iter().all(|x| x.1.done) {
+    while !state.outputs.as_ref().unwrap().iter().all(|x| x.1.done) {
         conn.recv_events(IoMode::Blocking).unwrap();
         conn.dispatch_events(&mut state);
     }
-    return state.outputs;
+    return state.outputs.unwrap();
 }
 
 fn wl_output_cb(ctx: EventCtx<WaylandState, WlOutput>) {
     let output = &mut ctx
         .state
-        .outputs
+        .outputs.as_mut().unwrap()
         .iter_mut()
         .find(|o| o.0 == ctx.proxy)
         .unwrap()
