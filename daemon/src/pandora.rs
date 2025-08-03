@@ -6,6 +6,7 @@ use pithos::error::{CommandError, DaemonError};
 use pithos::sockets::write_response_to_client_socket;
 
 use std::collections::HashMap;
+use std::fs::File;
 use std::os::unix::net::{UnixStream};
 use std::sync::{Arc, Mutex, RwLock};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -79,10 +80,12 @@ impl Pandora {
         let output: String;
         let mut can_spawn = false;
         let mut join_after = false;
+        let mut image_to_preload: Option<String> = None;
         match tc.clone() {
             ThreadCommand::Render(c) => {
                 output = c.output;
                 can_spawn = true;
+                image_to_preload = Some(c.image);
             }
             ThreadCommand::Stop(c) => {
                 output = c.output;
@@ -92,6 +95,9 @@ impl Pandora {
                 output = c.output;
             }
         };
+        if image_to_preload.is_some() {
+            self.handle_daemon_command(DaemonCommand::LoadImage(LoadImageCommand { image:image_to_preload.unwrap() }))?;
+        }
         let ret = self.dispatch_thread_command(output.clone(), tc, can_spawn);
         if join_after {
             return self.cleanup_thread(output);
@@ -151,28 +157,26 @@ impl Pandora {
         }
     }
 
-    // TODO: could do a read-only reference GenericImageView return - ownership weird though.
-    // i don't think there Needs to be a way to evict images from cache (annoying concurrency issues)
-    // "ooooh i can DOS your system by telling the daemon to load a buncha images" is that really worth considering? no. just let it oom 4head.
-    // alternatively, could offload the scaling step to this fetch, and then cache the scaled image..... hmm.....
-    pub fn get_image (&self, img: String) -> Result<RgbaImage, DaemonError> {
+    pub fn read_img_to_file(&self, img: &String, f: &File) -> Result<(), DaemonError> {
         {
             let images = self.images.read()?;
-            if images.contains_key(&img) {
-                return Ok(images.get(&img).unwrap().clone());
+            if images.contains_key(img) {
+                pithos::misc_helpers::img_into_buffer(images.get(img).unwrap(), &f);
+                return Ok(());
             }
         }
-        // image not preloaded.... sigh.....
-        self.load_image(LoadImageCommand {image: img.clone()})?;
-        // self.get_image(img) would be funny, but could recurse infinitely. lazy copy/paste instead.
+        Err(CommandError::new("invalid image (not loaded)"))
+    }
+
+    pub fn get_img_dimensions(&self, img: &String) -> Result<(u32, u32), DaemonError> {
         {
             let images = self.images.read()?;
-            if images.contains_key(&img) {
-                return Ok(images.get(&img).unwrap().clone());
-            } else {
-                return Err(CommandError::new("???")) // should be unreachable if the load_image didn't error out on us.
+            if images.contains_key(img) {
+                let image = images.get(img).unwrap();
+                return Ok((image.width(), image.height()));
             }
         }
+        Err(CommandError::new("invalid image (not loaded)"))
     }
 
     fn reload_config(&self, _cmd: ConfigReloadCommand) -> Result<&str, DaemonError> {
@@ -211,7 +215,7 @@ impl Pandora {
                     DaemonError::PoisonError => {
                         format!("lock poison error (uhhh)")
                     },
-                    DaemonError::CommandError(err) => err.response, 
+                    DaemonError::CommandError(err) => err.response,
                 }
             }
         };

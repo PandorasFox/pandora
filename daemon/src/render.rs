@@ -1,10 +1,10 @@
 use image::imageops::FilterType;
 use image::RgbaImage;
 use pithos::commands::{RenderCommand, RenderMode, ScrollCommand, ThreadCommand};
+use pithos::error::DaemonError;
 use crate::pandora::Pandora;
 use crate::wl_session::{initialize_wayland_handles, OutputMode, WaylandGlobals, WaylandState};
 
-use std::io::Write;
 use std::sync::mpsc::{Sender, Receiver};
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,7 +35,6 @@ pub struct RenderThread {
     globals: Option<WaylandGlobals>,
     // state below, ough
     render_state: Option<RenderState>,
-    raw_img: Option<RgbaImage>,
 }
 
 #[derive(Copy, Clone)]
@@ -55,6 +54,8 @@ pub struct RenderState {
     scrolling: Option<ScrollState>,
     crop_width: u32,
     crop_height: u32,
+    orig_width: u32,
+    orig_height: u32,
 }
 
 impl RenderThread {
@@ -67,7 +68,6 @@ impl RenderThread {
             conn: conn,
             globals: None,
             render_state: None,
-            raw_img: None,
         }
     }
 
@@ -75,7 +75,7 @@ impl RenderThread {
         let cmd = self.receiver.recv().expect("thread exploded while waiting on first command recv");
         match cmd {
             ThreadCommand::Render(c) => {
-                self.render(c);
+                self.render(c).expect("Error initializing render thread");
             }
             ThreadCommand::Stop(_) => {
                 return; // goodbye!
@@ -91,7 +91,7 @@ impl RenderThread {
 
     // i think all the as i32/u32's sprinkled around are going to cause problems
     // one day when someone uses some really fuckin' big images. whatever.
-    fn render(&mut self, cmd: RenderCommand) {
+    fn render(&mut self, cmd: RenderCommand) -> Result<(), DaemonError> {
         // todo: generally rewrite the buffer management >.<
         // will eventually want to / need to support more pixel formats (at least for HDR)....
         // thankfully I have an hdr monitor :) ... but for now.... rgba8. that's fine.
@@ -111,20 +111,21 @@ impl RenderThread {
             cmd.mode, globals.output_info);
         */
         
-        let img = self.pandora.get_image(cmd.image.clone()).unwrap();
-        println!("> {}: loaded image w/ dims {} x {}", self.name, img.width(), img.height());
-
-        let bytes_per_row: i32 = img.width() as i32 * 4;
-        let total_bytes: i32 = bytes_per_row * img.height() as i32;
 
         let file = tempfile::tempfile().expect("creating tempfile for shared mem failed");
-        img_into_buffer(&img, &file);
+        self.pandora.read_img_to_file(&cmd.image, &file)?;
+
+        let (img_width, img_height) = self.pandora.get_img_dimensions(&cmd.image).unwrap();
+
+        println!("> {}: loaded image w/ dims {} x {}", self.name, img_width, img_height);
+        let bytes_per_row: i32 = img_width as i32 * 4;
+        let total_bytes: i32 = bytes_per_row * img_height as i32;
 
         let pool = globals.shm.create_pool(&mut self.conn, OwnedFd::from(file.try_clone().unwrap()), total_bytes);
-        let buf = pool.create_buffer(&mut self.conn, 0, img.width() as i32, img.height() as i32, bytes_per_row, Format::Argb8888 );
+        let buf = pool.create_buffer(&mut self.conn, 0, img_width as i32, img_height as i32, bytes_per_row, Format::Argb8888 );
         globals.surface.attach(&mut self.conn, Some(buf), 0, 0); //hardcoded 0s l0l
         
-        let (crop_width, crop_height) = calculate_crop(cmd.mode, globals.output_info, img.clone());
+        let (crop_width, crop_height) = calculate_crop(cmd.mode, globals.output_info, img_width, img_height);
 
         println!("> {}: cropping surface view to {crop_width} x {crop_height}", self.name);
 
@@ -135,8 +136,8 @@ impl RenderThread {
                 );
 
                 // center image
-                let width_offset = (img.width() - crop_width) / 2;
-                let height_offset = (img.height() - crop_height) / 2;
+                let width_offset = (img_width - crop_width) / 2;
+                let height_offset = (img_height - crop_height) / 2;
 
                 println!("static mode: offset[{} x {}] geom[{} x {}]", width_offset, height_offset, crop_width, crop_height);
 
@@ -167,7 +168,7 @@ impl RenderThread {
                 })
             },
         };
-        self.raw_img = Some(img);
+        
         self.render_state = Some(RenderState {
             mode: cmd.mode,
             _img_path: cmd.image.clone(),
@@ -175,6 +176,8 @@ impl RenderThread {
             scrolling: scroll_state,
             crop_width: crop_width,
             crop_height: crop_height,
+            orig_width: img_width,
+            orig_height: img_height,
         });
 
         if scroll_state.is_some() {
@@ -184,10 +187,12 @@ impl RenderThread {
 
         globals.surface.commit(&mut self.conn);
         self.conn.blocking_roundtrip().unwrap();
+        Ok(())
     }
 
     fn draw_loop(&mut self) {
         loop {
+            // this is still kinda gross. needs rewriting still.
             self.conn.flush(IoMode::Blocking).unwrap();
             let received_events = self.conn.recv_events(IoMode::NonBlocking);
             // set up dispatch state. animation_state is the only mut, rest are just refs we need.
@@ -198,15 +203,19 @@ impl RenderThread {
             dispatch_state.output_info = Some(self.globals.as_ref().unwrap().output_info);
 
             self.conn.dispatch_events(&mut dispatch_state);
-            // make sure to update state after callbacks
             self.render_state = dispatch_state.render_state;
 
             if self.handle_inbound_commands() {
                 break;
             }
             if received_events.is_err() {
-                // no events on last poll, should sleep if not animating - need to figure out a better way to
-                // lazily block on both the receiver and wayland connection events
+                let scroll_state = self.render_state.as_ref().unwrap().scrolling.as_ref().unwrap();
+                if scroll_state.current_pos == scroll_state.end_pos {
+                    // not animating currently - BLOCK AND WAIT HERE
+                    self.handle_cmd(self.receiver.recv().expect("exploded while waiting on inbound command"));
+                    // if our WlOutput disappears while we're waiting like this we won't know though :/
+                    // TODO: seriously figure out how to re-attach to the output when that happens
+                }
             }
         }
     }
@@ -225,7 +234,7 @@ impl RenderThread {
     fn handle_cmd(&mut self, cmd: ThreadCommand) -> bool {
         match cmd {
             ThreadCommand::Render(c) => {
-                self.render(c);
+                self.render(c).expect("error handling render command");
                 return false;
             }
             ThreadCommand::Stop(_) => {
@@ -242,7 +251,7 @@ impl RenderThread {
         let globals = self.globals.as_mut().unwrap();
         let mut state = self.render_state.take().unwrap();
         do_scroll_step(&mut self.conn, &mut state,
-            globals.viewport, globals.output_info, globals.surface, pos);
+            &globals.viewport, &globals.output_info, &globals.surface, pos);
         self.render_state = Some(state);
     }
 
@@ -254,11 +263,11 @@ impl RenderThread {
             RenderMode::Static => false, // nothing to do here!
             RenderMode::ScrollingVertical(_) => {
                 let end_bound = render_state.crop_height + cmd.position;
-                end_bound <= self.raw_img.as_ref().unwrap().height()
+                end_bound <= render_state.orig_height
             },
             RenderMode::ScrollingLateral(_) => {
                 let end_bound = render_state.crop_width + cmd.position;
-                end_bound <= self.raw_img.as_ref().unwrap().width()
+                end_bound <= render_state.orig_width
             }
         };
         if !valid {
@@ -296,9 +305,9 @@ impl RenderThread {
         globals.surface.frame_with_cb(&mut self.conn, frame_callback);
         let next_pos = calc_next_pos(&render_state);
         do_scroll_step(&mut self.conn, &mut render_state,
-            globals.viewport,
-            globals.output_info,
-            globals.surface,
+            &globals.viewport,
+            &globals.output_info,
+            &globals.surface,
             next_pos,
         );
         self.render_state = Some(render_state);
@@ -308,6 +317,7 @@ impl RenderThread {
 fn calc_next_pos(render_state: &RenderState) -> u32 {
     let scroll_state = render_state.scrolling.as_ref().unwrap();
     // need to handle overshoot when step is not 1 lol
+    // also TODO: figure out how to interp from (start_pos, end_pos) based on duration?
     let mut maybe_pos = scroll_state.current_pos;
     if scroll_state.end_pos > scroll_state.current_pos {
         maybe_pos = scroll_state.current_pos + scroll_state.step;
@@ -325,9 +335,9 @@ fn calc_next_pos(render_state: &RenderState) -> u32 {
 
 fn do_scroll_step(conn: &mut Connection<WaylandState>,
     render_state: &mut RenderState,
-    viewport: WpViewport,
-    output_info: OutputMode,
-    surface: WlSurface,
+    viewport: &WpViewport,
+    output_info: &OutputMode,
+    surface: &WlSurface,
     next_pos: u32,
 ) {
     //println!("scrolling to {next_pos}");
@@ -370,7 +380,7 @@ fn frame_callback(ctx: EventCtx<WaylandState, WlCallback>) {
     if next_pos != render_state.scrolling.unwrap().current_pos {
         wl_state.surface.unwrap().frame_with_cb(ctx.conn, frame_callback);
         do_scroll_step(ctx.conn, &mut render_state,
-            wl_state.viewport.unwrap(), wl_state.output_info.unwrap(), wl_state.surface.unwrap(), next_pos
+            &wl_state.viewport.unwrap(), &wl_state.output_info.unwrap(), &wl_state.surface.unwrap(), next_pos
         );
     }
 
@@ -379,11 +389,11 @@ fn frame_callback(ctx: EventCtx<WaylandState, WlCallback>) {
 
 // todo: genericize and move into a util file
 // (agent will probably want to do these calculations later)
-fn calculate_crop(mode: RenderMode, output_info: OutputMode, img: RgbaImage) -> ( u32,  u32) {
+fn calculate_crop(mode: RenderMode, output_info: OutputMode, img_width: u32, img_height: u32) -> ( u32,  u32) {
     // scale factor of image to output
     // image bigger than output => we scale up, vice versa we scale down
-    let width_ratio = img.width() as f64 / output_info.width as f64;
-    let height_ratio = img.height() as f64 / output_info.height as f64;
+    let width_ratio = img_width as f64 / output_info.width as f64;
+    let height_ratio = img_height as f64 / output_info.height as f64;
 
     let scale_factor = match mode {
         // min?
@@ -398,11 +408,11 @@ fn calculate_crop(mode: RenderMode, output_info: OutputMode, img: RgbaImage) -> 
         },
         RenderMode::ScrollingVertical(_) => {
             // crop vertically, leaving full width
-            (img.width() as  u32, (output_info.height as f64 * scale_factor).round() as  u32)
+            (img_width as  u32, (output_info.height as f64 * scale_factor).round() as  u32)
         },
         RenderMode::ScrollingLateral(_) => {
             // crop horizontally, leaving full height
-            ((output_info.width as f64 * scale_factor).round() as  u32, img.height() as  u32)
+            ((output_info.width as f64 * scale_factor).round() as  u32, img_height as  u32)
 
         },
     }
@@ -439,12 +449,4 @@ fn _scale_img_for_mode(img: &RgbaImage, mode: RenderMode, output_info: OutputMod
         new_height as u32,
         FilterType::Lanczos3, // TODO: expose this in config/cmd
     );
-}
-
-fn img_into_buffer(img: &RgbaImage, f: &File) {
-    let mut buf = std::io::BufWriter::new(f);
-    for pixel in img.pixels() {
-        let (r, g, b, a) = (pixel.0[0], pixel.0[1],pixel.0[2],pixel.0[3]);
-        buf.write_all(&[b as u8, g as u8, r as u8, a as u8]).unwrap();
-    }
 }
