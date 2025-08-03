@@ -1,21 +1,21 @@
-use image::imageops::FilterType;
-use image::RgbaImage;
 use pithos::commands::{RenderCommand, RenderMode, ScrollCommand, ThreadCommand};
 use pithos::error::DaemonError;
-use crate::pandora::Pandora;
-use crate::wl_session::{initialize_wayland_handles, OutputMode, WaylandGlobals, WaylandState};
+use pithos::wayland::render_helpers::{get_wloutput_by_name, OutputMode, RenderState, RenderThreadWaylandState, ScrollState};
 
+use crate::pandora::Pandora;
+
+use std::ffi::CString;
 use std::sync::mpsc::{Sender, Receiver};
 use std::sync::Arc;
 use std::time::Duration;
-use std::{fs::File, os::fd::OwnedFd};
+use std::os::fd::OwnedFd;
 
 use wayrs_client::{Connection, EventCtx, IoMode};
-use wayrs_client::protocol::wl_shm::Format;
-use wayrs_client::protocol::WlSurface;
-use wayrs_client::protocol::WlCallback;
-use wayrs_protocols::viewporter::WpViewport;
+use wayrs_client::protocol::{WlShm, wl_shm::Format, WlSurface, WlCallback, WlOutput, WlCompositor};
 
+use wayrs_protocols::linux_dmabuf_v1::ZwpLinuxDmabufV1;
+use wayrs_protocols::viewporter::{WpViewport, WpViewporter};
+use wayrs_protocols::wlr_layer_shell_unstable_v1::{ZwlrLayerShellV1, ZwlrLayerSurfaceV1, zwlr_layer_surface_v1::Anchor, zwlr_layer_shell_v1::Layer};
 // note: output resize/mode-setting changes are currently not handled here
 // the "best" solution will probably involve a new command from the compositor agent
 // that will be sent upon an output mode/resolution change
@@ -23,43 +23,82 @@ use wayrs_protocols::viewporter::WpViewport;
 // and then reconnects - and can't be recovered without restarting the daemon presently.
 // definitely work to be done ! 
 
-// also i really need to do a pass and make sure to properly use references on.... a lot of these functions, i think.....
-// definitely just relied on derive(copy, clone) l0l
+#[derive(Copy, Clone)]
+pub struct RenderThreadWaylandGlobals {
+    _output: WlOutput,
+    output_info: OutputMode,
+    shm: WlShm, // shared mem singleton
+    _dma: ZwpLinuxDmabufV1,
+    _compositor: WlCompositor,
+    _layer_shell: ZwlrLayerShellV1,
+    surface: WlSurface,
+    _viewporter: WpViewporter,
+    viewport: WpViewport,
+}
 
 pub struct RenderThread {
     name: String,
     receiver: Receiver<ThreadCommand>,
     _sender: Sender<String>, 
     pandora: Arc<Pandora>,
-    conn: Connection<WaylandState>,
-    globals: Option<WaylandGlobals>,
+    conn: Connection<RenderThreadWaylandState>,
+    globals: Option<RenderThreadWaylandGlobals>,
     // state below, ough
     render_state: Option<RenderState>,
 }
 
-#[derive(Copy, Clone)]
-pub struct ScrollState {
-    start_pos: u32,
-    current_pos: u32,
-    end_pos: u32,
-    step: u32,
-    remaining_duration: Duration,
-    _num_frames: u32,
+fn layer_callback(mut ctx: EventCtx<RenderThreadWaylandState, ZwlrLayerSurfaceV1>) {
+    let layer: ZwlrLayerSurfaceV1 = ctx.proxy;
+    match ctx.event {
+        wayrs_protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::Event::Configure(args) => {
+            layer.ack_configure(&mut ctx.conn, args.serial);
+        },
+        _ => (),
+    }
 }
 
-pub struct RenderState {
-    mode: RenderMode,
-    _img_path: String,
-    _buf_file: File,
-    scrolling: Option<ScrollState>,
-    crop_width: u32,
-    crop_height: u32,
-    orig_width: u32,
-    orig_height: u32,
+fn initialize_wayland_handles(conn: &mut Connection<RenderThreadWaylandState>, output: String) -> RenderThreadWaylandGlobals {
+    let (wl_output, output_info) = get_wloutput_by_name(conn, output);
+    let width = output_info.mode.width;
+    let height = output_info.mode.height;
+
+    // TODO: vibe check if dma is easier/better to use in any meaningful way
+    // (it's hopefully widely available?)
+    // the current shm stuff seems to work fine enough for now, at least
+    let shm = conn.bind_singleton::<WlShm>(2..=2).unwrap();
+    let dma = conn.bind_singleton::<ZwpLinuxDmabufV1>(4..=5).unwrap();
+    let layer_shell = conn.bind_singleton::<ZwlrLayerShellV1>(4..=5).unwrap();
+    let compositor = conn.bind_singleton::<WlCompositor>(1..=6).unwrap();
+    let viewporter = conn.bind_singleton::<WpViewporter>(1..=1).unwrap();
+
+    let surface = compositor.create_surface(conn);
+    let viewport = viewporter.get_viewport(conn, surface);
+    let layer_surface = layer_shell.get_layer_surface(conn, surface, Some(wl_output), Layer::Background, CString::new("pandora").unwrap());
+    
+    layer_surface.set_size(conn, width as u32, height as u32);
+    layer_surface.set_anchor(conn, Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right );
+    layer_surface.set_exclusive_zone(conn, -1);
+    
+    // set callback handler for 'layer_surface.configure' event
+    conn.set_callback_for(layer_surface, layer_callback);
+    surface.commit(conn);
+    conn.blocking_roundtrip().unwrap();
+
+    return RenderThreadWaylandGlobals {
+        _output: wl_output,
+        shm: shm,
+        _dma: dma,
+        _compositor: compositor,
+        _layer_shell: layer_shell,
+        surface: surface,
+        output_info: output_info.mode,
+        _viewporter: viewporter,
+        viewport: viewport,
+    };
 }
 
 impl RenderThread {
-    pub fn new(output: String, recv: Receiver<ThreadCommand>, send: Sender<String>, pandora: Arc<Pandora>, conn: Connection<WaylandState>) -> RenderThread {
+    pub fn new(output: String, recv: Receiver<ThreadCommand>, send: Sender<String>, pandora: Arc<Pandora>, conn: Connection<RenderThreadWaylandState>) -> RenderThread {
         return RenderThread {
             name: output,
             receiver: recv,
@@ -82,44 +121,43 @@ impl RenderThread {
             }
         }
         self.draw_loop();
-        println!("> {}: goodbye!", self.name);
-        /* doing this appears to have no impact on memory usage?
+
+        println!("> {}: goodbye!", self.name); // todo self.log
         let globals = self.globals.take().unwrap();
+        let render_state = self.render_state.take().unwrap();
+        render_state.buffer.destroy(&mut self.conn);
+        render_state.bufpool.destroy(&mut self.conn);
         globals.viewport.destroy(&mut self.conn);
         globals._viewporter.destroy(&mut self.conn);
         globals._layer_shell.destroy(&mut self.conn);
         globals._dma.destroy(&mut self.conn);
         globals.surface.destroy(&mut self.conn);
-        */
     }
 
-    // i think all the as i32/u32's sprinkled around are going to cause problems
-    // one day when someone uses some really fuckin' big images. whatever.
+    // todo: generally rewrite the buffer management >.<
+    // will eventually want to / need to support more pixel formats (at least for HDR)....
+    // thankfully I have an hdr monitor :) ... but for now.... rgba8. that's fine.
+
     fn render(&mut self, cmd: &RenderCommand) -> Result<(), DaemonError> {
-        // todo: generally rewrite the buffer management >.<
-        // will eventually want to / need to support more pixel formats (at least for HDR)....
-        // thankfully I have an hdr monitor :) ... but for now.... rgba8. that's fine.
         if self.globals.is_none() {
             let globals = initialize_wayland_handles(&mut self.conn, cmd.output.clone());
             self.globals = Some(globals);
         }
-        // todo: attach file/buffer to self?
-        // need to do more work here for when we're switching images or whatever. cus uh. don't think that works rn
-
         let globals = self.globals.take().unwrap();
 
-        /* No longer scaling image with imageops - instead letting wp_viewport handle for us :)
-        // however, WP_viewport does Not like it if the image is too small.... might try this as a convenient upscale if needed?
-        let scaled_img = scale_img_for_mode(
-            &self.pandora.get_image(cmd.image.clone()).unwrap(),
-            cmd.mode, globals.output_info);
-        */
-        
-
         let file = tempfile::tempfile().expect("creating tempfile for shared mem failed");
-        self.pandora.read_img_to_file(&cmd.image, &file)?;
 
-        let (img_width, img_height) = self.pandora.get_img_dimensions(&cmd.image).unwrap();
+        // TODO: have an option for to omit this
+        // might "want" bigger images as it will give more positional granularity for scroll spring nonsense
+        let scale_to = match cmd.mode {
+            RenderMode::Static => Some((Some(globals.output_info.width as u32), Some(globals.output_info.height as u32))),
+            RenderMode::ScrollingVertical(_) => Some((Some(globals.output_info.width as u32), None)),
+            RenderMode::ScrollingLateral(_) => Some((None, Some(globals.output_info.height as u32)))
+        };
+
+        let (img_width, img_height) = self.pandora.read_img_to_file(&cmd.image, &file, scale_to)?;
+        println!("> {}: file loaded and scaled to {img_width} x {img_height}", self.name);
+
         self.pandora.drop_img_from_cache(&cmd.image).expect("error dropping image from cache, somehow");
 
         println!("> {}: loaded image w/ dims {} x {}", self.name, img_width, img_height);
@@ -179,6 +217,8 @@ impl RenderThread {
             mode: cmd.mode,
             _img_path: cmd.image.clone(),
             _buf_file: file,
+            buffer: buf,
+            bufpool: pool,
             scrolling: scroll_state,
             crop_width: crop_width,
             crop_height: crop_height,
@@ -201,7 +241,7 @@ impl RenderThread {
             self.conn.flush(IoMode::Blocking).unwrap();
             let received_events = self.conn.recv_events(IoMode::NonBlocking);
             // set up dispatch state. animation_state is the only mut, rest are just refs we need.
-            let mut dispatch_state = WaylandState::default();
+            let mut dispatch_state = RenderThreadWaylandState::default();
             dispatch_state.render_state = self.render_state.take(); // must be put back!!
             dispatch_state.viewport = Some(self.globals.as_ref().unwrap().viewport);
             dispatch_state.surface = Some(self.globals.as_ref().unwrap().surface);
@@ -338,7 +378,7 @@ fn calc_next_pos(render_state: &RenderState) -> u32 {
     return maybe_pos;
 }
 
-fn do_scroll_step(conn: &mut Connection<WaylandState>,
+fn do_scroll_step(conn: &mut Connection<RenderThreadWaylandState>,
     render_state: &mut RenderState,
     viewport: &WpViewport,
     output_info: &OutputMode,
@@ -377,7 +417,7 @@ fn do_scroll_step(conn: &mut Connection<WaylandState>,
     conn.blocking_roundtrip().unwrap();
 }
 
-fn frame_callback(ctx: EventCtx<WaylandState, WlCallback>) {
+fn frame_callback(ctx: EventCtx<RenderThreadWaylandState, WlCallback>) {
     let wl_state = ctx.state;
     
     let mut render_state = wl_state.render_state.take().unwrap();
@@ -421,39 +461,4 @@ fn calculate_crop(mode: &RenderMode, output_info: &OutputMode, img_width: u32, i
 
         },
     }
-}
-
-// currently unused, but maybe gonna get rolled over into Pandora to streamline down/upscaling images before dumping them into the buffer
-
-fn _get_scaled_dimensions(mode: RenderMode, output_width: i32, output_height: i32, img_width: u32, img_height: u32) -> (i32, i32) {
-    let width_ratio = output_width as f64 / img_width as f64;
-    let height_ratio = output_height as f64 / img_height as f64;
-    let scale_factor = match mode {
-        RenderMode::Static => f64::max(width_ratio, height_ratio),
-        RenderMode::ScrollingLateral(_) => height_ratio,
-        RenderMode::ScrollingVertical(_) => width_ratio,
-    };
-
-    let new_width: i32 = (img_width as f64 * scale_factor).round() as i32;
-    let new_height: i32 = (img_height as f64 * scale_factor).round() as i32;
-
-    return (new_width, new_height);
-}
-
-fn _scale_img_for_mode(img: &RgbaImage, mode: RenderMode, output_info: OutputMode) -> RgbaImage {
-    /*
-        thinking for a moment: let's say we have a 1920x1080 output, and a 2560x1440 img
-        we want to downscale the image, so output/img gives us 0.75, 0.75 => we scale the img by that
-        now, if the image is, say, 3000x1440.... we get (0.64, 0.75) => we pick the bigger of the two?
-     */
-    let (new_width, new_height) = _get_scaled_dimensions(mode,
-         output_info.width, output_info.height,
-         img.width(), img.height());
-
-    return image::imageops::resize(
-        img,
-        new_width as u32,
-        new_height as u32,
-        FilterType::Lanczos3, // TODO: expose this in config/cmd
-    );
 }

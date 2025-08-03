@@ -722,6 +722,8 @@ dependencies = [
  "image",
  "serde",
  "serde_json",
+ "wayrs-client",
+ "wayrs-protocols",
 ]
 
 [[package]]

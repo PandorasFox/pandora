@@ -1,6 +1,8 @@
 use crate::ipc::IpcHandler;
 use crate::render::{RenderThread};
-use crate::wl_session::WaylandState;
+use image::imageops::FilterType;
+use pithos::misc_helpers::get_new_image_dimensions;
+use pithos::wayland::render_helpers::RenderThreadWaylandState;
 use pithos::commands::{CommandType, ConfigReloadCommand, DaemonCommand, InfoCommand, LoadImageCommand, ThreadCommand};
 use pithos::error::{CommandError, DaemonError};
 use pithos::sockets::write_response_to_client_socket;
@@ -26,7 +28,7 @@ impl ThreadHandle {
     fn new(output: String, pandora: Arc<Pandora>) -> ThreadHandle {
         let (host_sender, thread_receiver) = channel::<ThreadCommand>();
         let (thread_sender, host_receiver) = channel::<String>();
-        let conn = Connection::<WaylandState>::connect().unwrap();
+        let conn = Connection::<RenderThreadWaylandState>::connect().unwrap();
 
         let thread = thread::spawn(move || {
             RenderThread::new(
@@ -174,26 +176,41 @@ impl Pandora {
         }
     }
 
-    pub fn read_img_to_file(&self, img: &String, f: &File) -> Result<(), DaemonError> {
+    // if scale_to is provided, uses the provided width/height dimensions of the output to scale image appropriately
+    // if only one dimension is provided, scales to that one and keeps aspect ratio.
+    pub fn read_img_to_file(&self, img: &String, f: &File, scale_to: Option<(Option<u32>, Option<u32>)>) -> Result<(u32, u32), DaemonError> {
+        // TODO: rescale image to match one dimension if needed
+        let mut image = None;
         {
             let images = self.images.read()?;
             if images.contains_key(img) {
-                pithos::misc_helpers::img_into_buffer(images.get(img).unwrap(), &f);
-                return Ok(());
+                image = Some(images.get(img).unwrap());
             }
-        }
-        Err(CommandError::new("invalid image (not loaded)"))
-    }
+            if image.is_none() {
+                return Err(CommandError::new("invalid image (not loaded)"));
+            }
 
-    pub fn get_img_dimensions(&self, img: &String) -> Result<(u32, u32), DaemonError> {
-        {
-            let images = self.images.read()?;
-            if images.contains_key(img) {
-                let image = images.get(img).unwrap();
-                return Ok((image.width(), image.height()));
-            }
+            let image = image.unwrap();
+            match scale_to {
+                Some((maybe_width, maybe_height)) => {
+                    let (new_width, new_height) = get_new_image_dimensions(image.width(), image.height(), maybe_width, maybe_height);
+                    pithos::misc_helpers::img_into_buffer(
+                        &image::imageops::resize(
+                        image,
+                        new_width as u32,
+                        new_height as u32,
+                        FilterType::Lanczos3,
+                        ),
+                        &f
+                    );
+                    return Ok((new_width, new_height));
+                },
+                None => {
+                    pithos::misc_helpers::img_into_buffer(image, &f);
+                    return Ok((image.width(), image.height()));
+                }
+            };
         }
-        Err(CommandError::new("invalid image (not loaded)"))
     }
 
     pub fn drop_img_from_cache(&self, img: &String) -> Result<(), DaemonError> {
@@ -214,9 +231,14 @@ impl Pandora {
             let mut write_threads = self.threads.write().expect("could not acquire read lock for dispatching command");
             return match write_threads.remove(output) {
                 Some(thread) => {
-                    thread.thread.join().expect("failed to join thread handle after stopping?");
                     write_threads.shrink_to_fit();
-                    Ok("thread stopped successfully")
+                    if thread.thread.is_finished() {
+                        let _ = thread.thread.join();
+                        Ok("thread stopped successfully")
+                    } else {
+                        Err(CommandError::new("thread not stopped (wedged?)"))
+                    }
+                    
                 },
                 None => Err(CommandError::new("named thread already stopped or otherwise didn't exist")),
             }
