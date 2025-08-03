@@ -75,23 +75,27 @@ impl RenderThread {
         let cmd = self.receiver.recv().expect("thread exploded while waiting on first command recv");
         match cmd {
             ThreadCommand::Render(c) => {
-                self.render(c).expect("Error initializing render thread");
+                self.render(&c).expect("Error initializing render thread");
             }
-            ThreadCommand::Stop(_) => {
-                return; // goodbye!
-            }
-            ThreadCommand::Scroll(_) => {
+            _ => {
                 panic!("invalid initial command received (should be Render");
             }
         }
         self.draw_loop();
         println!("> {}: goodbye!", self.name);
-        // .destroy() every object?
+        /* doing this appears to have no impact on memory usage?
+        let globals = self.globals.take().unwrap();
+        globals.viewport.destroy(&mut self.conn);
+        globals._viewporter.destroy(&mut self.conn);
+        globals._layer_shell.destroy(&mut self.conn);
+        globals._dma.destroy(&mut self.conn);
+        globals.surface.destroy(&mut self.conn);
+        */
     }
 
     // i think all the as i32/u32's sprinkled around are going to cause problems
     // one day when someone uses some really fuckin' big images. whatever.
-    fn render(&mut self, cmd: RenderCommand) -> Result<(), DaemonError> {
+    fn render(&mut self, cmd: &RenderCommand) -> Result<(), DaemonError> {
         // todo: generally rewrite the buffer management >.<
         // will eventually want to / need to support more pixel formats (at least for HDR)....
         // thankfully I have an hdr monitor :) ... but for now.... rgba8. that's fine.
@@ -116,6 +120,7 @@ impl RenderThread {
         self.pandora.read_img_to_file(&cmd.image, &file)?;
 
         let (img_width, img_height) = self.pandora.get_img_dimensions(&cmd.image).unwrap();
+        self.pandora.drop_img_from_cache(&cmd.image).expect("error dropping image from cache, somehow");
 
         println!("> {}: loaded image w/ dims {} x {}", self.name, img_width, img_height);
         let bytes_per_row: i32 = img_width as i32 * 4;
@@ -125,7 +130,7 @@ impl RenderThread {
         let buf = pool.create_buffer(&mut self.conn, 0, img_width as i32, img_height as i32, bytes_per_row, Format::Argb8888 );
         globals.surface.attach(&mut self.conn, Some(buf), 0, 0); //hardcoded 0s l0l
         
-        let (crop_width, crop_height) = calculate_crop(cmd.mode, globals.output_info, img_width, img_height);
+        let (crop_width, crop_height) = calculate_crop(&cmd.mode, &globals.output_info, img_width, img_height);
 
         println!("> {}: cropping surface view to {crop_width} x {crop_height}", self.name);
 
@@ -168,7 +173,8 @@ impl RenderThread {
                 })
             },
         };
-        
+
+        self.globals = Some(globals);
         self.render_state = Some(RenderState {
             mode: cmd.mode,
             _img_path: cmd.image.clone(),
@@ -181,7 +187,6 @@ impl RenderThread {
         });
 
         if scroll_state.is_some() {
-            self.globals = Some(globals);
             self.scroll_surface_to(scroll_state.unwrap().current_pos);
         } 
 
@@ -209,12 +214,12 @@ impl RenderThread {
                 break;
             }
             if received_events.is_err() {
-                let scroll_state = self.render_state.as_ref().unwrap().scrolling.as_ref().unwrap();
-                if scroll_state.current_pos == scroll_state.end_pos {
+                let scroll_state = self.render_state.as_ref().unwrap().scrolling.as_ref();
+                if scroll_state.is_none() || scroll_state.unwrap().current_pos == scroll_state.unwrap().end_pos {
                     // not animating currently - BLOCK AND WAIT HERE
-                    self.handle_cmd(self.receiver.recv().expect("exploded while waiting on inbound command"));
-                    // if our WlOutput disappears while we're waiting like this we won't know though :/
-                    // TODO: seriously figure out how to re-attach to the output when that happens
+                    if self.handle_cmd(&self.receiver.recv().expect("exploded while waiting on inbound command")) {
+                        break;
+                    }
                 }
             }
         }
@@ -224,14 +229,14 @@ impl RenderThread {
     fn handle_inbound_commands(&mut self) -> bool {
         loop {
             match self.receiver.try_recv() {
-                Ok(cmd) => return self.handle_cmd(cmd),
+                Ok(cmd) => return self.handle_cmd(&cmd),
                 Err(_) => break,
             }
         }
         return false;
     }
 
-    fn handle_cmd(&mut self, cmd: ThreadCommand) -> bool {
+    fn handle_cmd(&mut self, cmd: &ThreadCommand) -> bool {
         match cmd {
             ThreadCommand::Render(c) => {
                 self.render(c).expect("error handling render command");
@@ -255,7 +260,7 @@ impl RenderThread {
         self.render_state = Some(state);
     }
 
-    fn scroll(&mut self, cmd: ScrollCommand) {
+    fn scroll(&mut self, cmd: &ScrollCommand) {
         let mut render_state = self.render_state.take().unwrap();
         let mut scroll_state = render_state.scrolling.take().unwrap();
         // validate command/position before we commit to scrolling
@@ -389,7 +394,7 @@ fn frame_callback(ctx: EventCtx<WaylandState, WlCallback>) {
 
 // todo: genericize and move into a util file
 // (agent will probably want to do these calculations later)
-fn calculate_crop(mode: RenderMode, output_info: OutputMode, img_width: u32, img_height: u32) -> ( u32,  u32) {
+fn calculate_crop(mode: &RenderMode, output_info: &OutputMode, img_width: u32, img_height: u32) -> ( u32,  u32) {
     // scale factor of image to output
     // image bigger than output => we scale up, vice versa we scale down
     let width_ratio = img_width as f64 / output_info.width as f64;
@@ -417,6 +422,8 @@ fn calculate_crop(mode: RenderMode, output_info: OutputMode, img_width: u32, img
         },
     }
 }
+
+// currently unused, but maybe gonna get rolled over into Pandora to streamline down/upscaling images before dumping them into the buffer
 
 fn _get_scaled_dimensions(mode: RenderMode, output_width: i32, output_height: i32, img_width: u32, img_height: u32) -> (i32, i32) {
     let width_ratio = output_width as f64 / img_width as f64;

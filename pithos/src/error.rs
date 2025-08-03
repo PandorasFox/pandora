@@ -36,3 +36,11 @@ impl<T> From<std::sync::PoisonError<T>> for DaemonError {
         DaemonError::PoisonError
     }
 }
+
+/*
+impl From<std::sync::mpsc::SendError<ThreadCommand>> for DaemonError {
+    fn from(_: std::sync::mpsc::SendError<ThreadCommand>) -> DaemonError {
+        DaemonError::ThreadProbablyDead
+    }
+}
+*/

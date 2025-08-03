@@ -1,7 +1,8 @@
 [package]
-name = "daemon"
-version = "0.1.0"
+name = "pandora"
+version = "0.0.1"
 edition = "2024"
+
 
 [dependencies]
 pithos = { path = "../pithos" }

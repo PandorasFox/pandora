@@ -15,6 +15,9 @@ fn cli() -> Command {
         .about("make the daemon live-reload the config file - this might be removed?")
         .arg(arg!([path] "path to the config file to (re)load"))
     )
+    .subcommand(Command::new("stop-daemon")
+        .about("TODO")
+    )
     .subcommand(Command::new("loadimg")
         .about("TODO")
         .arg(arg!(<image> "path of the image to preload into memory"))
@@ -68,7 +71,6 @@ fn main() {
     let cmd: Option<CommandType>;
     // handling human input is always so much more annoying than computer input :(
     match matches.subcommand() {
-
         // daemon-level commands first
         Some(("info", sub_matches)) => {
             // TODO: refactor verbose arg to a global arg, default false, always a bool? seems easier maybe
@@ -84,6 +86,9 @@ fn main() {
             let image = extract_str(sub_matches,"image", "image path is required");
             cmd = Some(CommandType::Dc(DaemonCommand::LoadImage(
                 LoadImageCommand { image: image })));
+        }
+        Some(("stop-daemon", _)) => {
+            cmd = Some(CommandType::Dc(DaemonCommand::Stop));
         }
         Some(("reloadcfg", sub_matches)) => {
             let path = extract_str(sub_matches, "path", "config file path is required");
@@ -137,5 +142,5 @@ fn main() {
         _ => unreachable!(),
     }
     let command = cmd.expect("clap should prevent this in a prettier way?");
-    println!("{}", pithos::sockets::write_command_to_daemon_socket(command).expect("could not send command (is the daemon running?)"));
+    println!("{}", pithos::sockets::write_command_to_daemon_socket(&command).expect("could not send command (is the daemon running?)"));
 }

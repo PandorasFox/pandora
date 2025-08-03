@@ -54,6 +54,7 @@ pub enum DaemonCommand {
     Info(InfoCommand),
     ConfigReload(ConfigReloadCommand),
     LoadImage(LoadImageCommand),
+    Stop,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

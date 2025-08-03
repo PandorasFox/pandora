@@ -301,21 +301,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
-name = "daemon"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "image",
- "pithos",
- "serde",
- "serde_json",
- "tempfile",
- "wayrs-client",
- "wayrs-protocols",
- "wayrs-utils",
-]
-
-[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -707,6 +692,21 @@ name = "once_cell_polyfill"
 version = "1.70.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4895175b425cb1f87721b59f0f286c2092bd4af812243672510e1ac53e2e0ad"
+
+[[package]]
+name = "pandora"
+version = "0.0.1"
+dependencies = [
+ "bytemuck",
+ "image",
+ "pithos",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "wayrs-client",
+ "wayrs-protocols",
+ "wayrs-utils",
+]
 
 [[package]]
 name = "paste"

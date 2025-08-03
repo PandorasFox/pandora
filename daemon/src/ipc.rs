@@ -28,7 +28,7 @@ impl IpcHandler {
         for connection in self.listener.incoming() {
             let pandora = self.pandora.as_ref().clone();
             thread::spawn(move || 
-                pandora.process_ipc(connection.expect(
+                pandora.process_ipc(&connection.expect(
                     "could not accept incoming client socket/connection")));
         }
     }
