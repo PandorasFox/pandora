@@ -105,7 +105,7 @@ impl Pandora {
             self.handle_daemon_command(&DaemonCommand::LoadImage(LoadImageCommand { image:image_to_preload.unwrap() }))?;
         }
         let ret = self.dispatch_thread_command(output.clone(), &tc, can_spawn);
-        if join_after {
+        if join_after && ret.is_ok() { // if a stop command error'd in dispatch, it either crashed or didn't exist; no need to clean up
             return self.cleanup_thread(&output);
         } else {
             return ret;
@@ -119,10 +119,20 @@ impl Pandora {
             let read_threads = self.threads.read()?;
             match read_threads.get(&output) {
                 Some(thread) => {
-                    thread.sender.send(c.clone()).expect("error when sending command over thread channel (thread died?)");
-                    return Ok("dispatched command to thread");
+                    if thread.sender.send(c.clone()).is_ok() {
+                        return Ok("dispatched command to thread");
+                    }
+                    drop(read_threads); // kinda gross
+                    match self.cleanup_thread(&output) {
+                        Ok(_) => {
+                            return Err(CommandError::new("could not send command to thread; cleaned it up"))
+                        },
+                        Err(e) => {
+                            return Err(CommandError::new(format!("could not send command to thread; failed to clean it up: [{e:?}]").as_str()))
+                        }
+                    }
                 },
-                None => {} // do nothing and release the lock!
+                None => {} // doesn't exist; release lock and then re-enter outside to try to spawn a thread
             }
         }
         if spawn {
@@ -179,7 +189,6 @@ impl Pandora {
     // if scale_to is provided, uses the provided width/height dimensions of the output to scale image appropriately
     // if only one dimension is provided, scales to that one and keeps aspect ratio.
     pub fn read_img_to_file(&self, img: &String, f: &File, scale_to: Option<(Option<u32>, Option<u32>)>) -> Result<(u32, u32), DaemonError> {
-        // TODO: rescale image to match one dimension if needed
         let mut image = None;
         {
             let images = self.images.read()?;
@@ -238,7 +247,6 @@ impl Pandora {
                     } else {
                         Err(CommandError::new("thread not stopped (wedged?)"))
                     }
-                    
                 },
                 None => Err(CommandError::new("named thread already stopped or otherwise didn't exist")),
             }
@@ -272,11 +280,6 @@ impl Pandora {
     }
 
     fn handle_cmd(&self, cmd: &CommandType) -> Result<&str, DaemonError> {
-        // todo: add a proper real global verbose flag
-        // (after I refactor the cli binary into this one and shim in the message-sending so it's all one binary)
-        if false {
-            dbg!(cmd.clone());
-        }
         return match cmd {
             CommandType::Dc(dc) => self.handle_daemon_command(&dc),
             // CommandType::Ac(ac) => {}

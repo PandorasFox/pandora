@@ -250,6 +250,9 @@ impl RenderThread {
             self.conn.dispatch_events(&mut dispatch_state);
             self.render_state = dispatch_state.render_state;
 
+            // TODO: figure out how to cancel existing scroll anims?
+            // why does multiple scrolls make scroll speed go up permanently??
+
             if self.handle_inbound_commands() {
                 break;
             }
@@ -324,14 +327,10 @@ impl RenderThread {
 
         scroll_state.start_pos = scroll_state.current_pos; // current pos should always be updated in scroll_to
         scroll_state.end_pos = cmd.position;
+        // not applicable for spring interp (duration is based on distance and spring settings)
         scroll_state.remaining_duration = Duration::from_millis(1_500);
-        // should maybe figure out "number of estimated frames based on refresh rate and duration"
-        // and then step-per-frame based off end pos / start pos / etc
-        // need to also maybe interp the step along a curve...... complicated!
-        // will probably just need to go look at niri to figure out how the scroll anims are interp'd
-        // since we want to mimic that for now, I guess
-        // (might cause motion sickness otherwise, idk)
-        scroll_state.step = 1; // TODO FIGURE OUT :')
+        // replace with pulling the next step out of an interp curve (thankfully relatively straightforwardly shimmable)
+        scroll_state.step = 1;
         render_state.scrolling = Some(scroll_state);
         self.render_state = Some(render_state);
 
