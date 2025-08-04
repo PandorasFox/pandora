@@ -1,3 +1,4 @@
+use pithos::anims::spring::{Spring, SpringParams};
 use pithos::commands::{RenderCommand, RenderMode, ScrollCommand, ThreadCommand};
 use pithos::error::DaemonError;
 use pithos::wayland::render_helpers::{get_wloutput_by_name, OutputMode, RenderState, RenderThreadWaylandState, ScrollState};
@@ -7,7 +8,7 @@ use crate::pandora::Pandora;
 use std::ffi::CString;
 use std::sync::mpsc::{Sender, Receiver};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::os::fd::OwnedFd;
 
 use wayrs_client::{Connection, EventCtx, IoMode};
@@ -110,6 +111,10 @@ impl RenderThread {
         }
     }
 
+    fn log(&self, s: String) {
+        println!("> {}: {s}", self.name);
+    }
+
     pub fn start(&mut self) {
         let cmd = self.receiver.recv().expect("thread exploded while waiting on first command recv");
         match cmd {
@@ -122,7 +127,6 @@ impl RenderThread {
         }
         self.draw_loop();
 
-        println!("> {}: goodbye!", self.name); // todo self.log
         let globals = self.globals.take().unwrap();
         let render_state = self.render_state.take().unwrap();
         render_state.buffer.destroy(&mut self.conn);
@@ -132,6 +136,7 @@ impl RenderThread {
         globals._layer_shell.destroy(&mut self.conn);
         globals._dma.destroy(&mut self.conn);
         globals.surface.destroy(&mut self.conn);
+        self.log("goodbye!".to_string());
     }
 
     // todo: generally rewrite the buffer management >.<
@@ -156,11 +161,11 @@ impl RenderThread {
         };
 
         let (img_width, img_height) = self.pandora.read_img_to_file(&cmd.image, &file, scale_to)?;
-        println!("> {}: file loaded and scaled to {img_width} x {img_height}", self.name);
+        self.log(format!("file loaded and scaled to {img_width} x {img_height}"));
 
         self.pandora.drop_img_from_cache(&cmd.image).expect("error dropping image from cache, somehow");
 
-        println!("> {}: loaded image w/ dims {} x {}", self.name, img_width, img_height);
+        self.log(format!("loaded image w/ dims {} x {}", img_width, img_height));
         let bytes_per_row: i32 = img_width as i32 * 4;
         let total_bytes: i32 = bytes_per_row * img_height as i32;
 
@@ -170,7 +175,7 @@ impl RenderThread {
         
         let (crop_width, crop_height) = calculate_crop(&cmd.mode, &globals.output_info, img_width, img_height);
 
-        println!("> {}: cropping surface view to {crop_width} x {crop_height}", self.name);
+        self.log(format!("cropping surface view to {crop_width} x {crop_height}"));
 
         let scroll_state = match cmd.mode {
             RenderMode::Static => {
@@ -182,7 +187,7 @@ impl RenderThread {
                 let width_offset = (img_width - crop_width) / 2;
                 let height_offset = (img_height - crop_height) / 2;
 
-                println!("static mode: offset[{} x {}] geom[{} x {}]", width_offset, height_offset, crop_width, crop_height);
+                self.log(format!("static mode: offset[{} x {}] geom[{} x {}]", width_offset, height_offset, crop_width, crop_height));
 
                 globals.viewport.set_source(&mut self.conn,
                     width_offset.into(), height_offset.into(),
@@ -195,9 +200,14 @@ impl RenderThread {
                     start_pos: offset,
                     current_pos: offset,
                     end_pos: offset,
-                    step: 0,
-                    remaining_duration: Duration::from_secs(0),
-                    _num_frames: 0,
+                    anim_start: Instant::now(),
+                    anim_duration: Duration::ZERO,
+                    anim: Spring {
+                        from: offset as f64,
+                        to: offset as f64,
+                        initial_velocity: 0.0,
+                        params: SpringParams::default(),
+                    }
                 })
             },
             RenderMode::ScrollingLateral(offset) => {
@@ -205,9 +215,14 @@ impl RenderThread {
                     start_pos: offset,
                     current_pos: offset,
                     end_pos: offset,
-                    step: 0,
-                    remaining_duration: Duration::from_secs(0),
-                    _num_frames: 0,
+                    anim_start: Instant::now(),
+                    anim_duration: Duration::ZERO,
+                    anim: Spring {
+                        from: offset as f64,
+                        to: offset as f64,
+                        initial_velocity: 0.0,
+                        params: SpringParams::default(),
+                    }
                 })
             },
         };
@@ -304,6 +319,7 @@ impl RenderThread {
     }
 
     fn scroll(&mut self, cmd: &ScrollCommand) {
+        let is_already_scrolling  = self.is_scrolling();
         let mut render_state = self.render_state.take().unwrap();
         let mut scroll_state = render_state.scrolling.take().unwrap();
         // validate command/position before we commit to scrolling
@@ -319,7 +335,7 @@ impl RenderThread {
             }
         };
         if !valid {
-            println!("would scroll past end and explode");
+            self.log("would scroll past end and explode".to_string());
             render_state.scrolling = Some(scroll_state);
             self.render_state = Some(render_state);
             return;
@@ -327,24 +343,31 @@ impl RenderThread {
 
         scroll_state.start_pos = scroll_state.current_pos; // current pos should always be updated in scroll_to
         scroll_state.end_pos = cmd.position;
-        // not applicable for spring interp (duration is based on distance and spring settings)
-        scroll_state.remaining_duration = Duration::from_millis(1_500);
-        // replace with pulling the next step out of an interp curve (thankfully relatively straightforwardly shimmable)
-        scroll_state.step = 1;
+        scroll_state.anim_start = Instant::now();
+
+        scroll_state.anim.from = scroll_state.current_pos as f64;
+        scroll_state.anim.to = cmd.position as f64;
+        scroll_state.anim.initial_velocity = 0.0; // TODO: figure out how to determine initial velocity if is_already_scrolling!
+
+        scroll_state.anim_duration = scroll_state.anim.duration();
+
         render_state.scrolling = Some(scroll_state);
         self.render_state = Some(render_state);
 
-        self.start_scroll_anim();
+        self.log(format!("scrolling from {} to {} (was already scrolling: {})", scroll_state.start_pos, scroll_state.end_pos, is_already_scrolling));
+
+        if !is_already_scrolling {
+            self.start_scroll_anim();
+        }
     }
 
     fn start_scroll_anim(&mut self) {
         let mut render_state = self.render_state.take().unwrap();
         let globals = self.globals.as_ref().unwrap();
 
-        println!("> {}: animation starting. start_pos: {}, end_pos: {}",
-            self.name,
+        self.log(format!("animation starting. start_pos: {}, end_pos: {}",
             render_state.scrolling.unwrap().start_pos,
-            render_state.scrolling.unwrap().end_pos);
+            render_state.scrolling.unwrap().end_pos));
     
         globals.surface.frame_with_cb(&mut self.conn, frame_callback);
         let next_pos = calc_next_pos(&render_state);
@@ -356,25 +379,21 @@ impl RenderThread {
         );
         self.render_state = Some(render_state);
     }
+
+    fn is_scrolling(&self) -> bool {
+        let render_state = self.render_state.as_ref().unwrap();
+        let scroll_state = render_state.scrolling.as_ref();
+        if scroll_state.is_some() {
+            return is_animating(scroll_state.unwrap());
+        } else {
+            return false;
+        }
+    }
 }
 
 fn calc_next_pos(render_state: &RenderState) -> u32 {
     let scroll_state = render_state.scrolling.as_ref().unwrap();
-    // need to handle overshoot when step is not 1 lol
-    // also TODO: figure out how to interp from (start_pos, end_pos) based on duration?
-    let mut maybe_pos = scroll_state.current_pos;
-    if scroll_state.end_pos > scroll_state.current_pos {
-        maybe_pos = scroll_state.current_pos + scroll_state.step;
-        if maybe_pos > scroll_state.end_pos {
-            maybe_pos = scroll_state.end_pos;
-        }
-    } else if scroll_state.end_pos < scroll_state.current_pos {
-        maybe_pos = scroll_state.current_pos - scroll_state.step;
-        if maybe_pos < scroll_state.end_pos {
-            maybe_pos = scroll_state.end_pos;
-        }
-    }
-    return maybe_pos;
+    return scroll_state.anim.value_at(Instant::now() - scroll_state.anim_start).round() as u32;
 }
 
 fn do_scroll_step(conn: &mut Connection<RenderThreadWaylandState>,
@@ -384,7 +403,6 @@ fn do_scroll_step(conn: &mut Connection<RenderThreadWaylandState>,
     surface: &WlSurface,
     next_pos: u32,
 ) {
-    //println!("scrolling to {next_pos}");
     match render_state.mode {
         RenderMode::Static => {
             // THIS SHOULD BE A NOP / INVALID COMMAND IDK
@@ -420,15 +438,20 @@ fn frame_callback(ctx: EventCtx<RenderThreadWaylandState, WlCallback>) {
     let wl_state = ctx.state;
     
     let mut render_state = wl_state.render_state.take().unwrap();
-    let next_pos = calc_next_pos(&render_state);
-    if next_pos != render_state.scrolling.unwrap().current_pos {
+    let new_pos = calc_next_pos(&render_state);
+
+    if new_pos != render_state.scrolling.unwrap().current_pos {
         wl_state.surface.unwrap().frame_with_cb(ctx.conn, frame_callback);
         do_scroll_step(ctx.conn, &mut render_state,
-            &wl_state.viewport.unwrap(), &wl_state.output_info.unwrap(), &wl_state.surface.unwrap(), next_pos
+            &wl_state.viewport.unwrap(), &wl_state.output_info.unwrap(), &wl_state.surface.unwrap(), new_pos
         );
     }
 
     wl_state.render_state = Some(render_state);
+}
+
+fn is_animating(state: &ScrollState) -> bool {
+    return (Instant::now() - state.anim_start) < state.anim_duration;
 }
 
 // todo: genericize and move into a util file

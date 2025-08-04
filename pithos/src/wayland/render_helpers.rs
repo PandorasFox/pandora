@@ -1,7 +1,8 @@
+use crate::anims::spring::Spring;
 use crate::commands::RenderMode;
 
 use std::fs::File;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use wayrs_client::{Connection, EventCtx, IoMode};
 use wayrs_client::global::{GlobalExt};
@@ -28,9 +29,9 @@ pub struct ScrollState {
     pub start_pos: u32,
     pub current_pos: u32,
     pub end_pos: u32,
-    pub step: u32,
-    pub remaining_duration: Duration,
-    pub _num_frames: u32,
+    pub anim_start: Instant,
+    pub anim_duration: Duration, // only needed for LERP'd animations with fixed durations
+    pub anim: Spring,
 }
 
 pub struct RenderState {

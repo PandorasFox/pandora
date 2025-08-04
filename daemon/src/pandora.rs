@@ -13,6 +13,7 @@ use std::os::unix::net::{UnixStream};
 use std::sync::{Arc, Mutex, RwLock};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use image::{RgbaImage, ImageReader};
 use wayrs_client::Connection;
@@ -106,6 +107,8 @@ impl Pandora {
         }
         let ret = self.dispatch_thread_command(output.clone(), &tc, can_spawn);
         if join_after && ret.is_ok() { // if a stop command error'd in dispatch, it either crashed or didn't exist; no need to clean up
+            // if we full-steam ahead, we will get to .is_finished before the thread might be finished
+            thread::sleep(Duration::from_millis(1)); // seems to be sufficient for letting the thread exit before we clean it up
             return self.cleanup_thread(&output);
         } else {
             return ret;
@@ -245,6 +248,8 @@ impl Pandora {
                         let _ = thread.thread.join();
                         Ok("thread stopped successfully")
                     } else {
+                        // can happen when a stop is issued -> daemon gets here before the thread stops
+                        // .... but also could happen on a genuine wedge, so we don't want to lie about that.
                         Err(CommandError::new("thread not stopped (wedged?)"))
                     }
                 },
