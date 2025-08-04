@@ -15,6 +15,10 @@ a side-goal is to also add screen locking functionality to this. Theoretically, 
 have the daemon spawn some extra threads for the lockscreen surfaces & another to handle inputs (?).
 I poked at all of that for i3lock-color a decade ago, and things were wayyy shittier then, right?
 
+## demo
+
+https://github.com/user-attachments/assets/a2a0a3d2-f321-458d-9056-a9ce835fbd9f
+
 ## misc notes
 
 (mostly for myself to keep track of minor tidbits)
@@ -22,10 +26,7 @@ I poked at all of that for i3lock-color a decade ago, and things were wayyy shit
 * this is *not vram friendly* at the moment, due to wanting to load images that are bigger than the display resolution.
 I believe this can maybe be addressed using [dmabufs](https://wayland.app/protocols/linux-dmabuf-v1#zwp_linux_dmabuf_v1)
 alongside texture compression (?), but I wouldn't count on it.
-    * This can definitely be improved by adding an (optional?) resize step in RenderThread::render/pandora::read_img_to_file
-    * will need to move the aspect ratio/dimension resize logic into pandora? bit weirdge, render thread will have to tell the daemon
-    what to scale it (down? or up, i guess, which solves some problems)
-    * i have 24GiB of vram so this is admittedly very low on my list of priorities, but (image::imageops::resize)[https://docs.rs/image/latest/image/imageops/fn.resize.html] with lanczos3 is straightforward to chuck into all this
+    * i have 24GiB of vram so this is admittedly very low on my list of priorities
 * my primary monitor 'disconnects' when asleep (unlike my secondary monitor??); restoring this will 'best' be handled at the agent level
     * Due to laptops etc that might have varied displays that can get disconnected for long periods of time, I don't think it makes sense to
     try and handle this inside the thread by waiting for a reconnect that might never arrive.
@@ -36,4 +37,4 @@ that from its wayland event stream)
 * i am Learning A Lot about wayland protocol nonsense in real-time, and de-rusting my rust, so I plan to do a buncha cleanup before tackling
 the agent thread
 * [session lock nonsense](https://wayland.app/protocols/ext-session-lock-v1) honestly seems spookily straightforward for letting us reuse the
-existing (dma)bufs
+existing (dma)bufs, just need to implement the input handling etc in its own bespoke thread
