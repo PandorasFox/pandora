@@ -115,6 +115,10 @@ impl RenderThread {
         println!("> {}: {s}", self.name);
     }
 
+    fn respond(&self, s: String) {
+        self._sender.send(s).expect("exploded when sending response to daemon");
+    }
+
     pub fn start(&mut self) {
         let cmd = self.receiver.recv().expect("thread exploded while waiting on first command recv");
         match cmd {
@@ -126,7 +130,9 @@ impl RenderThread {
             }
         }
         self.draw_loop();
+    }
 
+    fn end(&mut self) {
         let globals = self.globals.take().unwrap();
         let render_state = self.render_state.take().unwrap();
         render_state.buffer.destroy(&mut self.conn);
@@ -149,15 +155,15 @@ impl RenderThread {
             self.globals = Some(globals);
         }
         let globals = self.globals.take().unwrap();
-
         let file = tempfile::tempfile().expect("creating tempfile for shared mem failed");
+        let (output_width, output_height) = (globals.output_info.width as u32, globals.output_info.height as u32);
 
         // TODO: have an option for to omit this
         // might "want" bigger images as it will give more positional granularity for scroll spring nonsense
         let scale_to = match cmd.mode {
-            RenderMode::Static => Some((Some(globals.output_info.width as u32), Some(globals.output_info.height as u32))),
-            RenderMode::ScrollingVertical(_) => Some((Some(globals.output_info.width as u32), None)),
-            RenderMode::ScrollingLateral(_) => Some((None, Some(globals.output_info.height as u32)))
+            RenderMode::Static => Some((Some(output_width), Some(output_height))),
+            RenderMode::ScrollingVertical(_) => Some((Some(output_width), None)),
+            RenderMode::ScrollingLateral(_) => Some((None, Some(output_height)))
         };
 
         let (img_width, img_height) = self.pandora.read_img_to_file(&cmd.image, &file, scale_to)?;
@@ -173,9 +179,8 @@ impl RenderThread {
         let buf = pool.create_buffer(&mut self.conn, 0, img_width as i32, img_height as i32, bytes_per_row, Format::Argb8888 );
         globals.surface.attach(&mut self.conn, Some(buf), 0, 0); //hardcoded 0s l0l
         
-        let (crop_width, crop_height) = calculate_crop(&cmd.mode, &globals.output_info, img_width, img_height);
 
-        self.log(format!("cropping surface view to {crop_width} x {crop_height}"));
+        self.log(format!("cropping surface view to {output_width} x {output_height}"));
 
         let scroll_state = match cmd.mode {
             RenderMode::Static => {
@@ -184,14 +189,14 @@ impl RenderThread {
                 );
 
                 // center image
-                let width_offset = (img_width - crop_width) / 2;
-                let height_offset = (img_height - crop_height) / 2;
+                let width_offset = (img_width - output_width) / 2;
+                let height_offset = (img_height - output_height) / 2;
 
-                self.log(format!("static mode: offset[{} x {}] geom[{} x {}]", width_offset, height_offset, crop_width, crop_height));
+                self.log(format!("static mode: offset[{} x {}] geom[{} x {}]", width_offset, height_offset, output_width, output_height));
 
                 globals.viewport.set_source(&mut self.conn,
                     width_offset.into(), height_offset.into(),
-                    crop_width.into(), crop_height.into(),
+                    output_width.into(), output_height.into(),
                 );
                 None
             }
@@ -207,7 +212,8 @@ impl RenderThread {
                         to: offset as f64,
                         initial_velocity: 0.0,
                         params: SpringParams::default(),
-                    }
+                    },
+                    _frame_count: 0,
                 })
             },
             RenderMode::ScrollingLateral(offset) => {
@@ -222,7 +228,8 @@ impl RenderThread {
                         to: offset as f64,
                         initial_velocity: 0.0,
                         params: SpringParams::default(),
-                    }
+                    },
+                    _frame_count: 0,
                 })
             },
         };
@@ -235,8 +242,8 @@ impl RenderThread {
             buffer: buf,
             bufpool: pool,
             scrolling: scroll_state,
-            crop_width: crop_width,
-            crop_height: crop_height,
+            crop_width: output_width,
+            crop_height: output_height,
             orig_width: img_width,
             orig_height: img_height,
         });
@@ -255,6 +262,7 @@ impl RenderThread {
             // this is still kinda gross. needs rewriting still.
             self.conn.flush(IoMode::Blocking).unwrap();
             let received_events = self.conn.recv_events(IoMode::NonBlocking);
+
             // set up dispatch state. animation_state is the only mut, rest are just refs we need.
             let mut dispatch_state = RenderThreadWaylandState::default();
             dispatch_state.render_state = self.render_state.take(); // must be put back!!
@@ -265,47 +273,38 @@ impl RenderThread {
             self.conn.dispatch_events(&mut dispatch_state);
             self.render_state = dispatch_state.render_state;
 
-            // TODO: figure out how to cancel existing scroll anims?
-            // why does multiple scrolls make scroll speed go up permanently??
+            self.handle_inbound_commands();
 
-            if self.handle_inbound_commands() {
-                break;
-            }
-            if received_events.is_err() {
+            if received_events.is_err() { // did not process any animation commands this tick; block on command queue lazy style
                 let scroll_state = self.render_state.as_ref().unwrap().scrolling.as_ref();
-                if scroll_state.is_none() || scroll_state.unwrap().current_pos == scroll_state.unwrap().end_pos {
+                if scroll_state.is_none() || !is_animating(scroll_state.unwrap()) {
                     // not animating currently - BLOCK AND WAIT HERE
-                    if self.handle_cmd(&self.receiver.recv().expect("exploded while waiting on inbound command")) {
-                        break;
-                    }
+                    self.handle_cmd(&self.receiver.recv().expect("thread exploded during blocking read on inbound commands"));
                 }
             }
         }
     }
 
     // returns true if it's time to exit e.g. received stop
-    fn handle_inbound_commands(&mut self) -> bool {
+    fn handle_inbound_commands(&mut self) {
         loop {
             match self.receiver.try_recv() {
-                Ok(cmd) => return self.handle_cmd(&cmd),
+                Ok(cmd) => self.handle_cmd(&cmd),
                 Err(_) => break,
             }
         }
-        return false;
     }
 
-    fn handle_cmd(&mut self, cmd: &ThreadCommand) -> bool {
+    fn handle_cmd(&mut self, cmd: &ThreadCommand) {
         match cmd {
             ThreadCommand::Render(c) => {
                 self.render(c).expect("error handling render command");
-                return false;
             }
             ThreadCommand::Stop(_) => {
-                return true; // goodbye!
+                self.end();
             }
             ThreadCommand::Scroll(c) => {
                 self.scroll(c);
-                return false;
             }
         }
     }
@@ -348,13 +347,14 @@ impl RenderThread {
         scroll_state.anim.from = scroll_state.current_pos as f64;
         scroll_state.anim.to = cmd.position as f64;
         scroll_state.anim.initial_velocity = 0.0; // TODO: figure out how to determine initial velocity if is_already_scrolling!
+        scroll_state._frame_count = 0;
 
         scroll_state.anim_duration = scroll_state.anim.duration();
 
         render_state.scrolling = Some(scroll_state);
         self.render_state = Some(render_state);
 
-        self.log(format!("scrolling from {} to {} (was already scrolling: {})", scroll_state.start_pos, scroll_state.end_pos, is_already_scrolling));
+        self.respond(format!("scrolling from {} to {}, expected duration {:?} (was already scrolling: {})", scroll_state.start_pos, scroll_state.end_pos, scroll_state.anim_duration, is_already_scrolling));
 
         if !is_already_scrolling {
             self.start_scroll_anim();
@@ -393,7 +393,9 @@ impl RenderThread {
 
 fn calc_next_pos(render_state: &RenderState) -> u32 {
     let scroll_state = render_state.scrolling.as_ref().unwrap();
-    return scroll_state.anim.value_at(Instant::now() - scroll_state.anim_start).round() as u32;
+    let eclipsed_duration = Instant::now() - scroll_state.anim_start;
+    let ret = scroll_state.anim.value_at(eclipsed_duration).round() as u32;
+    return ret;
 }
 
 fn do_scroll_step(conn: &mut Connection<RenderThreadWaylandState>,
@@ -429,7 +431,6 @@ fn do_scroll_step(conn: &mut Connection<RenderThreadWaylandState>,
     let mut scroll_state = render_state.scrolling.take().unwrap();
     scroll_state.current_pos = next_pos;
     render_state.scrolling = Some(scroll_state);
-    //globals.surface.damage(&mut self.conn, 0, 0, 3440, 1440); // <- not needed?? cool.
     surface.commit(conn);
     conn.blocking_roundtrip().unwrap();
 }
@@ -439,48 +440,17 @@ fn frame_callback(ctx: EventCtx<RenderThreadWaylandState, WlCallback>) {
     
     let mut render_state = wl_state.render_state.take().unwrap();
     let new_pos = calc_next_pos(&render_state);
+    render_state.scrolling.as_mut().unwrap()._frame_count += 1;
 
-    if new_pos != render_state.scrolling.unwrap().current_pos {
+    if is_animating(render_state.scrolling.as_ref().unwrap()) {
         wl_state.surface.unwrap().frame_with_cb(ctx.conn, frame_callback);
         do_scroll_step(ctx.conn, &mut render_state,
             &wl_state.viewport.unwrap(), &wl_state.output_info.unwrap(), &wl_state.surface.unwrap(), new_pos
         );
     }
-
     wl_state.render_state = Some(render_state);
 }
 
 fn is_animating(state: &ScrollState) -> bool {
     return (Instant::now() - state.anim_start) < state.anim_duration;
-}
-
-// todo: genericize and move into a util file
-// (agent will probably want to do these calculations later)
-fn calculate_crop(mode: &RenderMode, output_info: &OutputMode, img_width: u32, img_height: u32) -> ( u32,  u32) {
-    // scale factor of image to output
-    // image bigger than output => we scale up, vice versa we scale down
-    let width_ratio = img_width as f64 / output_info.width as f64;
-    let height_ratio = img_height as f64 / output_info.height as f64;
-
-    let scale_factor = match mode {
-        // min?
-        RenderMode::Static => f64::min(width_ratio, height_ratio),
-        RenderMode::ScrollingVertical(_) => width_ratio,
-        RenderMode::ScrollingLateral(_) => height_ratio,
-    };
-
-    match mode {
-        RenderMode::Static => {
-            ((output_info.width as f64 * scale_factor).round() as  u32, (output_info.height as f64 * scale_factor).round() as  u32)
-        },
-        RenderMode::ScrollingVertical(_) => {
-            // crop vertically, leaving full width
-            (img_width as  u32, (output_info.height as f64 * scale_factor).round() as  u32)
-        },
-        RenderMode::ScrollingLateral(_) => {
-            // crop horizontally, leaving full height
-            ((output_info.width as f64 * scale_factor).round() as  u32, img_height as  u32)
-
-        },
-    }
 }

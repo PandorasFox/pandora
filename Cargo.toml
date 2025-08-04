@@ -1,3 +1,7 @@
 [workspace]
 members = [ "cli", "daemon", "pithos" ]
 resolver = "3"
+
+[profile.release]  # i could also add optimizations to .debug but eh
+strip = "none"
+debug = true

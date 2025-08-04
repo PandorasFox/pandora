@@ -32,6 +32,7 @@ pub struct ScrollState {
     pub anim_start: Instant,
     pub anim_duration: Duration, // only needed for LERP'd animations with fixed durations
     pub anim: Spring,
+    pub _frame_count: u32,
 }
 
 pub struct RenderState {

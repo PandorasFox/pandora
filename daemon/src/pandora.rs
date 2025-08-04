@@ -79,7 +79,7 @@ impl Pandora {
             DaemonCommand::Info(c) => self.info(c),
             DaemonCommand::LoadImage(c) => self.load_image(c),
             DaemonCommand::ConfigReload(c) => self.reload_config(c),
-            DaemonCommand::Stop => std::process::exit(0),
+            DaemonCommand::Stop => std::process::exit(0), // todo implement an fn that stops children, responds to command, and then dies
         };
     }
 
