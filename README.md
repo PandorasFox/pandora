@@ -14,7 +14,7 @@ I poked at all of that for i3lock-color a decade ago, and things were wayyy shit
 
 ## demo
 
-https://github.com/user-attachments/assets/a2a0a3d2-f321-458d-9056-a9ce835fbd9f
+![demo video](https://gitlab.hecate.pink/hecate/pandora/-/raw/dev/demo.mp4?ref_type=heads)
 
 ## misc notes
 
