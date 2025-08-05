@@ -1,6 +1,7 @@
-pub mod commands;
-pub mod sockets;
-pub mod error;
-pub mod misc_helpers;
-pub mod wayland;
+pub mod agents;
 pub mod anims;
+pub mod commands;
+pub mod error;
+pub mod misc;
+pub mod sockets;
+pub mod wayland;

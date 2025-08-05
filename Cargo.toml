@@ -1,5 +1,5 @@
 [workspace]
-members = [ "cli", "daemon", "pithos" ]
+members = [ "cli", "daemon", "pithos" , "tmp_agent_dev"]
 resolver = "3"
 
 [profile.release]  # i could also add optimizations to .debug but eh

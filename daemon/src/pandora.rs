@@ -1,7 +1,7 @@
 use crate::ipc::IpcHandler;
 use crate::render::{RenderThread};
 use image::imageops::FilterType;
-use pithos::misc_helpers::get_new_image_dimensions;
+use pithos::misc::get_new_image_dimensions;
 use pithos::wayland::render_helpers::RenderThreadWaylandState;
 use pithos::commands::{CommandType, ConfigReloadCommand, DaemonCommand, InfoCommand, LoadImageCommand, ThreadCommand};
 use pithos::error::{CommandError, DaemonError};
@@ -30,6 +30,10 @@ impl ThreadHandle {
         let (host_sender, thread_receiver) = channel::<ThreadCommand>();
         let (thread_sender, host_receiver) = channel::<String>();
         let conn = Connection::<RenderThreadWaylandState>::connect().unwrap();
+
+        // realizing now that i could instead rewrite this to make an Arc<RenderThread> and just move that into
+        // the thread, and mutex-wrap a lot of state & eliminate the internal IPC. oh well! :)
+        // maybe a future refactoring fun task
 
         let thread = thread::spawn(move || {
             RenderThread::new(
@@ -206,7 +210,7 @@ impl Pandora {
             match scale_to {
                 Some((maybe_width, maybe_height)) => {
                     let (new_width, new_height) = get_new_image_dimensions(image.width(), image.height(), maybe_width, maybe_height);
-                    pithos::misc_helpers::img_into_buffer(
+                    pithos::misc::img_into_buffer(
                         &image::imageops::resize(
                         image,
                         new_width as u32,
@@ -218,7 +222,7 @@ impl Pandora {
                     return Ok((new_width, new_height));
                 },
                 None => {
-                    pithos::misc_helpers::img_into_buffer(image, &f);
+                    pithos::misc::img_into_buffer(image, &f);
                     return Ok((image.width(), image.height()));
                 }
             };
