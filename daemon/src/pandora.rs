@@ -1,8 +1,11 @@
-use crate::ipc::IpcHandler;
+use crate::agents::outputs::OutputHandler;
+use crate::ipc::InboundCommandHandler;
 use crate::render::{RenderThread};
 use image::imageops::FilterType;
+use pithos::config::load_config;
 use pithos::misc::get_new_image_dimensions;
-use pithos::wayland::render_helpers::RenderThreadWaylandState;
+use pithos::wayland::agents;
+use pithos::wayland::render_helpers::{Output, RenderThreadWaylandState};
 use pithos::commands::{CommandType, ConfigReloadCommand, DaemonCommand, InfoCommand, LoadImageCommand, ThreadCommand};
 use pithos::error::{CommandError, DaemonError};
 use pithos::sockets::write_response_to_client_socket;
@@ -56,26 +59,47 @@ impl ThreadHandle {
 // daemon
 #[derive(Clone)]
 pub struct Pandora {
-    pub ipc: Option<Arc<IpcHandler>>,
+    cmd_ipc_thread: Option<Arc<InboundCommandHandler>>,
+    outputs_thread: Option<Arc<OutputHandler>>,
     // key: output name
     threads: Arc<RwLock<HashMap<String, ThreadHandle>>>,
     // key: file path
     // could maybe just get rid of this table entirely tbh? it's starting to feel like uncessary overhead at this point....
     // but i imagine it's maybe useful if you want to script switching between images frequently..... idk.
     images: Arc<RwLock<HashMap<String, RgbaImage>>>,
+    // agent: Arc<AgentHandler>,
 }
 
 impl Pandora {
     pub fn new() -> Arc<Pandora> {
         return Arc::new(Pandora {
-            ipc: None,
+            cmd_ipc_thread: None,
+            outputs_thread: None,
             threads: Arc::new(RwLock::new(HashMap::<String, ThreadHandle>::new())),
             images: Arc::new(RwLock::new(HashMap::<String, RgbaImage>::new())),
         });
     }
 
-    pub fn bind_ipc(&mut self, ipc: Arc<IpcHandler>) {
-        self.ipc = Some(ipc);
+    pub fn bind_threads(&mut self,
+        ipc: Arc<InboundCommandHandler>,
+        outputs: Arc<OutputHandler>,
+    ) {
+        self.cmd_ipc_thread = Some(ipc);
+        self.outputs_thread = Some(outputs);
+    }
+
+    pub fn start(&mut self) {
+        self.outputs_thread.as_ref().unwrap().start();
+        // main thread control flow loop
+        self.cmd_ipc_thread.as_ref().unwrap().start_listen();
+    }
+
+    pub fn handle_cmd(&self, cmd: &CommandType) -> Result<&str, DaemonError> {
+        return match cmd {
+            CommandType::Dc(dc) => self.handle_daemon_command(&dc),
+            // CommandType::Ac(ac) => {}
+            CommandType::Tc(tc) => self.handle_thread_command(&tc),
+        };
     }
 
     fn handle_daemon_command(&self, dc: &DaemonCommand) -> Result<&str, DaemonError> {
@@ -262,10 +286,6 @@ impl Pandora {
         }
     }
 
-    pub fn start(&self) {
-        self.ipc.as_ref().expect("ipc handler should be bound before start").start_listen();
-    }
-
     pub fn process_ipc(&self, socket: &UnixStream) -> () {
         let cmd = pithos::sockets::read_command_from_client_socket(&socket.try_clone().expect("couldn't clone socket"));
         let response = match self.handle_cmd(&cmd) {
@@ -286,13 +306,5 @@ impl Pandora {
             }
         };
         write_response_to_client_socket(response.as_str(), socket).expect("failed to write response to inbound ipc");
-    }
-
-    fn handle_cmd(&self, cmd: &CommandType) -> Result<&str, DaemonError> {
-        return match cmd {
-            CommandType::Dc(dc) => self.handle_daemon_command(&dc),
-            // CommandType::Ac(ac) => {}
-            CommandType::Tc(tc) => self.handle_thread_command(&tc),
-        };
     }
 }

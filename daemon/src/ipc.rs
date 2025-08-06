@@ -6,19 +6,19 @@ use std::os::unix::net::{SocketAddr, UnixListener};
 use crate::pandora::Pandora;
 
 #[derive(Clone)]
-pub struct IpcHandler {
+pub struct InboundCommandHandler {
     listener: Arc<UnixListener>,
     pandora: Arc<Pandora>,
 }
 
-impl IpcHandler {
-    pub fn new(pandora: Arc<Pandora>) -> Arc<IpcHandler> {
+impl InboundCommandHandler {
+    pub fn new(pandora: Arc<Pandora>) -> Arc<InboundCommandHandler> {
         let listen_addr = SocketAddr::from_abstract_name("pandora").expect(
             "could not construct linux named-socket address (sorry bsd?)");
         let socket = UnixListener::bind_addr(&listen_addr).expect(
             "failed to bind to named socket (already running?)");
 
-        return Arc::new(IpcHandler {
+        return Arc::new(InboundCommandHandler {
             listener: Arc::new(socket),
             pandora: pandora,
         });

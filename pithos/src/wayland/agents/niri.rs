@@ -2,7 +2,7 @@ use miette::miette;
 use niri_ipc::{Request, Response};
 use niri_ipc::socket::Socket;
 
-use crate::config::ConfigNode;
+use crate::config::DaemonConfig;
 
 pub struct NiriAgent {
     // deps
@@ -20,7 +20,7 @@ impl NiriAgent {
                 _pandora: pandora,
                 processor: None,
             }),
-            Err(_) => Err(()),
+            Err(e) => panic!("{e:?}"),
         }
     }
 
@@ -29,6 +29,7 @@ impl NiriAgent {
         let mut processor = NiriProcessor::default();
         processor.config = crate::config::load_config()?;
         // TODO: socket.send(Request::Outputs, Workspaces) => construct initial state
+        // TODO: send initial render commands based on configs after constructing initial state
         // TODO: minimal wayrs Output handler => Stop/Start handler
         let reply = socket.send(Request::EventStream).unwrap();
         if matches!(reply, Ok(Response::Handled)) {
@@ -54,7 +55,7 @@ struct OutputState {
 
 #[derive(Default)]
 struct NiriProcessor {
-    config: Vec<ConfigNode>,
+    config: DaemonConfig,
     outputs: Vec<(String, OutputState)>,
 }
 
@@ -64,5 +65,6 @@ impl NiriProcessor {
         // WorkspacesChanges: keep track of workspaces-per-output - MIGHT NEED A SCROLL MIGHT NOT 
         // WorkspaceActivated: compute which output had state change, compute direction/resulting position, dispatch!
         // WindowFocus: will require https://github.com/YaLTeR/niri/pull/1265 (or me addressing the comments) to handle lateral scrolling
+        // TODO dispatch events
     }
 }
