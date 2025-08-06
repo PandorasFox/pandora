@@ -1,9 +1,8 @@
-use std::collections::HashMap;
-
+use miette::miette;
 use niri_ipc::{Request, Response};
 use niri_ipc::socket::Socket;
 
-// TODO: implement a static config file for output <-> image mapping
+use crate::config::ConfigNode;
 
 pub struct NiriAgent {
     // deps
@@ -25,9 +24,10 @@ impl NiriAgent {
         }
     }
 
-    pub fn start(mut self) {
+    pub fn start(mut self) -> miette::Result<()> {
         let mut socket = self.socket.take().unwrap();
         let mut processor = NiriProcessor::default();
+        processor.config = crate::config::load_config()?;
         // TODO: socket.send(Request::Outputs, Workspaces) => construct initial state
         // TODO: minimal wayrs Output handler => Stop/Start handler
         let reply = socket.send(Request::EventStream).unwrap();
@@ -36,7 +36,9 @@ impl NiriAgent {
             while let Ok(event) = read_event() {
                 processor.process(event);
             }
+            return Ok(());
         }
+        return Err(miette!("could not connect to niri IPC stream"));
     }
 }
 
@@ -52,6 +54,7 @@ struct OutputState {
 
 #[derive(Default)]
 struct NiriProcessor {
+    config: Vec<ConfigNode>,
     outputs: Vec<(String, OutputState)>,
 }
 
