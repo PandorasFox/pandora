@@ -1,5 +1,5 @@
 use crate::pandora::Pandora;
-use pithos::commands::{CommandType, ScrollCommand, ThreadCommand};
+use pithos::commands::{CommandType, DaemonCommand, LoadImageCommand, ScrollCommand, ThreadCommand};
 use pithos::config::{load_config, DaemonConfig, RenderModeConfig};
 use pithos::misc::get_new_image_dimensions;
 
@@ -8,7 +8,6 @@ use std::ops::Index;
 use std::sync::Arc;
 use std::thread;
 
-use image::ImageReader;
 use niri_ipc::{Event, Output, Request, Response, Workspace};
 use niri_ipc::socket::Socket;
 
@@ -29,7 +28,7 @@ impl NiriAgent {
 
     pub fn start(&self) {
         let pandora = self.pandora.clone();
-        match thread::Builder::new().name("output handler".to_string())
+        match thread::Builder::new().name("niri agent".to_string())
             .spawn(move || {
                 run(pandora);
                 eprintln!("niri agent thread exiting (is session exiting?)");
@@ -57,7 +56,9 @@ fn run(pandora: Arc<Pandora>) {
         Err(_) => return,
     };
     
-    processor.init_state(&outputs_response, &workspaces_response);
+    for cmd in processor.init_state(pandora.clone(), &outputs_response, &workspaces_response) {
+        let _ = pandora.handle_cmd(&cmd);
+    }
 
     let reply = socket.send(Request::EventStream).unwrap();
     if matches!(reply, Ok(Response::Handled)) {
@@ -105,7 +106,7 @@ impl NiriProcessor {
         self.workspaces = workspaces.clone();
     }
 
-    fn init_state(&mut self, outputs: &HashMap<String, Output>, workspaces: &Vec<Workspace>) {
+    fn init_state(&mut self, pandora: Arc<Pandora>, outputs: &HashMap<String, Output>, workspaces: &Vec<Workspace>) -> Vec<CommandType> {
         for (output_name, output) in outputs {
             let output_config = match self.config.outputs.iter().find(|oc| oc.name == *output_name) {
                 Some(c) => c,
@@ -126,10 +127,17 @@ impl NiriProcessor {
                 };
 
                 let img_path = output_config.image.clone();
-                // TODO ask pandora for image dimensions :)
-                // ? tell pandora to load-and-scale? hmmmg.....
-                let image = ImageReader::open(img_path.clone()).unwrap().decode().unwrap();
-                let (scaled_width, scaled_height) = get_new_image_dimensions(image.width(), image.height(), scale_width, scale_height);
+                let cmd = DaemonCommand::LoadImage(LoadImageCommand {
+                    image: img_path.clone(),
+                });
+                pandora.handle_cmd(&CommandType::Dc(cmd)).expect("couldn't load image, other stuff will explode, sorry lol");
+
+                let (image_width, image_height) = match pandora.get_image_dimensions(img_path.clone()) {
+                    Ok((w, h)) => (w, h),
+                    Err(_) => panic!("images not yet loaded, bad race condition, fixme"),
+                };
+               
+                let (scaled_width, scaled_height) = get_new_image_dimensions(image_width, image_height, scale_width, scale_height);
 
                 let output_state = OutputState {
                     _width: mode.width as i32,
@@ -144,6 +152,21 @@ impl NiriProcessor {
             }
         }
         self.update_workspaces(&workspaces);
+        return self.reseat_scroll_positions();
+
+    }
+
+    fn reseat_scroll_positions(&self) -> Vec<CommandType> {
+        let mut cmds = Vec::<CommandType>::new();
+        for workspace in &self.workspaces {
+            if workspace.is_active {
+                match self.gen_scroll_cmd_for_workspace_id(workspace.id) {
+                    Some(cmd) => cmds.push(cmd),
+                    None => (),
+                };
+            }
+        }
+        return cmds;
     }
 
     fn process(&mut self, e: niri_ipc::Event) -> Vec<CommandType> {
@@ -154,14 +177,7 @@ impl NiriProcessor {
                     output.1.max_workspace_idx = 0;
                 }
                 self.update_workspaces(&workspaces);
-                for workspace in workspaces {
-                    if workspace.is_active {
-                        match self.gen_scroll_cmd_for_workspace_id(workspace.id) {
-                            Some(cmd) => cmds.push(cmd),
-                            None => (),
-                        };
-                    }
-                }
+                cmds = self.reseat_scroll_positions();
             },
             Event::WorkspaceActivated {id, .. } => {
                 match self.gen_scroll_cmd_for_workspace_id(id) {

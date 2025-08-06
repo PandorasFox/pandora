@@ -221,6 +221,23 @@ impl Pandora {
         }
     }
 
+    pub fn get_image_dimensions(&self, img: String) -> Result<(u32, u32), ()> {
+        {
+            let images_lock = self.images.read();
+            match images_lock {
+                Ok(images_table) => {
+                    if images_table.contains_key(&img) {
+                        let image = images_table.get(&img).unwrap();
+                        return Ok((image.width(), image.height()));
+                    } else {
+                        return Err(());
+                    }
+                },
+                Err(e) => panic!("{e:?}"),
+            };
+        }
+    }
+
     // if scale_to is provided, uses the provided width/height dimensions of the output to scale image appropriately
     // if only one dimension is provided, scales to that one and keeps aspect ratio.
     pub fn read_img_to_file(&self, img: &String, f: &File, scale_to: Option<(Option<u32>, Option<u32>)>) -> Result<(u32, u32), DaemonError> {
