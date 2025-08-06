@@ -1,3 +1,4 @@
+use crate::agents::niri::NiriAgent;
 use crate::agents::outputs::OutputHandler;
 use crate::ipc::InboundCommandHandler;
 use crate::render::{RenderThread};
@@ -59,6 +60,7 @@ impl ThreadHandle {
 pub struct Pandora {
     cmd_ipc_thread: Option<Arc<InboundCommandHandler>>,
     outputs_thread: Option<Arc<OutputHandler>>,
+    niri_ag_thread: Option<Arc<NiriAgent>>,
     // key: output name
     threads: Arc<RwLock<HashMap<String, ThreadHandle>>>,
     // key: file path
@@ -73,6 +75,7 @@ impl Pandora {
         return Arc::new(Pandora {
             cmd_ipc_thread: None,
             outputs_thread: None,
+            niri_ag_thread: None,
             threads: Arc::new(RwLock::new(HashMap::<String, ThreadHandle>::new())),
             images: Arc::new(RwLock::new(HashMap::<String, RgbaImage>::new())),
         });
@@ -81,13 +84,16 @@ impl Pandora {
     pub fn bind_threads(&mut self,
         ipc: Arc<InboundCommandHandler>,
         outputs: Arc<OutputHandler>,
+        niri: Arc<NiriAgent>,
     ) {
         self.cmd_ipc_thread = Some(ipc);
         self.outputs_thread = Some(outputs);
+        self.niri_ag_thread = Some(niri);
     }
 
     pub fn start(&mut self) {
         self.outputs_thread.as_ref().unwrap().start();
+        self.niri_ag_thread.as_ref().unwrap().start();
         // main thread control flow loop
         self.cmd_ipc_thread.as_ref().unwrap().start_listen();
     }

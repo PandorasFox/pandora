@@ -2,8 +2,6 @@ use std::sync::Arc;
 
 use pithos::config::load_config;
 
-use crate::agents::outputs::OutputHandler;
-
 mod pandora;
 mod ipc;
 mod render;
@@ -15,10 +13,10 @@ fn main() {
     // initialize daemon & ipc handlers, and glue them together.
     let mut pandora = crate::pandora::Pandora::new();
     let ipc = crate::ipc::InboundCommandHandler::new(pandora.clone());
-    let outputs = OutputHandler::new(config, pandora.clone());
-    
+    let outputs = crate::agents::outputs::OutputHandler::new(config, pandora.clone());
+    let niri = crate::agents::niri::NiriAgent::new(pandora.clone());
     let pandora = Arc::make_mut(&mut pandora);
-    pandora.bind_threads(ipc.clone(), outputs.clone());
+    pandora.bind_threads(ipc.clone(), outputs.clone(), niri);
     // yeehaw
     pandora.start()
 }

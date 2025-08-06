@@ -1,0 +1,22 @@
+// sample config to get you started
+// should go in ~/.config/pandora.kdl (or $XDG_CONFIG_HOME/pandora.kdl)
+output "DP-1" {
+    image "~/pictures/wallpapers/portrait.png"
+    mode "scroll-vertical"
+}
+
+output "DP-2" {
+    workspace "🗨️" {
+        image "~/pictures/wallpapers/chat_wallpaper.png"
+        mode "static"
+        trigger "workspace-name"
+    }
+
+    lockscreen {
+        image "~/pictures/wallpapers/lockscreen.png"
+        mode "static"
+    }
+
+    image "~/pictures/wallpapers/another wallpaper.png"
+    mode "static"
+}

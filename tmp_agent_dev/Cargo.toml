@@ -1,8 +1,0 @@
-[package]
-name = "tmp_agent_dev"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-pithos = { path = "../pithos" }
-miette = { version = "5.1.0", features = ["fancy"] }

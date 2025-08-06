@@ -1,64 +1,72 @@
-use crate::commands::{CommandType, ScrollCommand, ThreadCommand};
-use crate::config::{DaemonConfig, RenderModeConfig};
-use crate::misc::get_new_image_dimensions;
-use crate::sockets;
+use crate::pandora::Pandora;
+use pithos::commands::{CommandType, ScrollCommand, ThreadCommand};
+use pithos::config::{load_config, DaemonConfig, RenderModeConfig};
+use pithos::misc::get_new_image_dimensions;
 
 use std::collections::HashMap;
 use std::ops::Index;
+use std::sync::Arc;
+use std::thread;
 
 use image::ImageReader;
-use miette::miette;
 use niri_ipc::{Event, Output, Request, Response, Workspace};
 use niri_ipc::socket::Socket;
 
 pub struct NiriAgent {
-    // deps
-    socket: Option<Socket>,
-    _pandora: Option<()>,
+    pandora: Arc<Pandora>,
 }
 
 impl NiriAgent {
     // constructor will get handed an Arc<Pandora> later. For now, if it's none, we fall back to sending to the @pandora socket.
-    pub fn new(pandora: Option<()>) -> Result<NiriAgent, ()> {
+    pub fn new(pandora: Arc<Pandora>) -> Arc<NiriAgent> {
         match Socket::connect() {
-            Ok(s) => Ok(NiriAgent {
-                socket: Some(s),
-                _pandora: pandora,
+            Ok(_) => Arc::new(NiriAgent {
+                pandora,
             }),
             Err(e) => panic!("{e:?}"),
         }
     }
 
-    pub fn start(&mut self) -> miette::Result<()> {
-        let mut socket = self.socket.take().unwrap();
-        let mut processor = NiriProcessor::default();
-        processor.config = crate::config::load_config()?;
-
-        let outputs_response = match socket.send(Request::Outputs).unwrap() {
-            Ok(Response::Outputs(response)) => response,
-            Ok(_) => unreachable!(), // must not receive a differente type of response
-            Err(e) => return Err(miette!(e)),
-        };
-        let workspaces_response = match socket.send(Request::Workspaces).unwrap() {
-            Ok(Response::Workspaces(response)) => response,
-            Ok(_) => unreachable!(), // must not receive a differente type of response
-            Err(e) => return Err(miette!(e)),
-        };
-        
-        processor.init_state(&outputs_response, &workspaces_response);
-
-        let reply = socket.send(Request::EventStream).unwrap();
-        if matches!(reply, Ok(Response::Handled)) {
-            let mut read_event = socket.read_events();
-            while let Ok(event) = read_event() {
-                for cmd in processor.process(event) {
-                    // replace with self.pandora.handle_cmd(cmd) when refactored in
-                    let _ = sockets::write_command_to_daemon_socket(&cmd);
-                }
+    pub fn start(&self) {
+        let pandora = self.pandora.clone();
+        match thread::Builder::new().name("output handler".to_string())
+            .spawn(move || {
+                run(pandora);
+                eprintln!("niri agent thread exiting (is session exiting?)");
             }
-            return Ok(());
+        ) {
+            Ok(_) => (), // [tf2 medic voice] i will live forever!
+            Err(e) => panic!("could not spawn niri ipc handler thread: {e:?}"),
+        };
+    }
+}
+
+fn run(pandora: Arc<Pandora>) {
+    let mut socket = Socket::connect().unwrap();
+    let mut processor = NiriProcessor::default();
+    processor.config = load_config().unwrap();
+
+    let outputs_response = match socket.send(Request::Outputs).unwrap() {
+        Ok(Response::Outputs(response)) => response,
+        Ok(_) => unreachable!(), // must not receive a differente type of response
+        Err(_) => return,
+    };
+    let workspaces_response = match socket.send(Request::Workspaces).unwrap() {
+        Ok(Response::Workspaces(response)) => response,
+        Ok(_) => unreachable!(), // must not receive a differente type of response
+        Err(_) => return,
+    };
+    
+    processor.init_state(&outputs_response, &workspaces_response);
+
+    let reply = socket.send(Request::EventStream).unwrap();
+    if matches!(reply, Ok(Response::Handled)) {
+        let mut read_event = socket.read_events();
+        while let Ok(event) = read_event() {
+            for cmd in processor.process(event) {
+                let _ = pandora.handle_cmd(&cmd);
+            }
         }
-        return Err(miette!("could not connect to niri IPC stream"));
     }
 }
 
@@ -119,6 +127,7 @@ impl NiriProcessor {
 
                 let img_path = output_config.image.clone();
                 // TODO ask pandora for image dimensions :)
+                // ? tell pandora to load-and-scale? hmmmg.....
                 let image = ImageReader::open(img_path.clone()).unwrap().decode().unwrap();
                 let (scaled_width, scaled_height) = get_new_image_dimensions(image.width(), image.height(), scale_width, scale_height);
 
