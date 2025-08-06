@@ -12,6 +12,16 @@ a side-goal is to also add screen locking functionality to this. Theoretically, 
 have the daemon spawn some extra threads for the lockscreen surfaces & another to handle inputs (?).
 I poked at all of that for i3lock-color a decade ago, and things were wayyy shittier then, right?
 
+## installing
+    cd daemon && cargo install --path .
+
+### usage
+I recommend executing this with a systemd user unit file (I know, I know). A sample service file is included in the repo:
+
+    cp pandora.service ~/.config/systemd/user/pandora.service && systemctl --user start pandora
+
+I recommend following [niri's example systemd setup](https://github.com/YaLTeR/niri/wiki/Example-systemd-Setup) to leverage `niri.service.wants` if you have multiple compositors installed, and only want to use this with niri at the moment.
+
 ## misc notes
 
 (mostly for myself to keep track of minor tidbits)
