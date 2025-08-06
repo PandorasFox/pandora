@@ -2,7 +2,7 @@ use pithos::commands::{CommandType, RenderCommand, RenderMode, StopCommand, Thre
 use pithos::config::{DaemonConfig, RenderModeConfig};
 
 use std::sync::Arc;
-use std::thread::{self, JoinHandle};
+use std::thread;
 
 use wayrs_client::global::GlobalExt;
 use wayrs_client::protocol::wl_output::{self, WlOutput};
@@ -32,7 +32,7 @@ impl OutputHandler {
         .spawn(|| {
             run(config, pandora);
         }) {
-            Ok(handle) => (),
+            Ok(_) => (), // [tf2 medic voice] i will live forever!
             Err(e) => panic!("could not spawn output events handler thread: {e:?}"),
         }
     }
