@@ -16,11 +16,25 @@ I poked at all of that for i3lock-color a decade ago, and things were wayyy shit
     cd daemon && cargo install --path .
 
 ### usage
+Make sure you copy the included `pandora.kdl` to `~/.config/pandora.kdl`
+(or `$XDG_CONFIG_HOME/pandora.kdl`), and edit it to reflect your outputs
+and desired wallpapers. It has some placeholder values of the various options
+(several of which are to-be-implemented).
+
 I recommend executing this with a systemd user unit file (I know, I know). A sample service file is included in the repo:
 
     cp pandora.service ~/.config/systemd/user/pandora.service && systemctl --user start pandora
 
 I recommend following [niri's example systemd setup](https://github.com/YaLTeR/niri/wiki/Example-systemd-Setup) to leverage `niri.service.wants` if you have multiple compositors installed, and only want to use this with niri at the moment.
+
+You will also need the following in your niri config:
+
+    layer-rule {
+      match namespace="^pandora$"
+      place-within-backdrop true
+    }
+
+
 
 ## misc notes
 
