@@ -174,7 +174,7 @@ impl RenderThread {
         let (img_width, img_height) = self.pandora.read_img_to_file(&cmd.image, &file, scale_to)?;
         self.log(format!("file loaded and scaled to {img_width} x {img_height}"));
 
-        self.pandora.drop_img_from_cache(&cmd.image).expect("error dropping image from cache, somehow"); // bit stupid ngl
+        // self.pandora.drop_img_from_cache(&cmd.image).expect("error dropping image from cache, somehow");
 
         self.log(format!("loaded image w/ dims {} x {}", img_width, img_height));
         let bytes_per_row: i32 = img_width as i32 * 4;

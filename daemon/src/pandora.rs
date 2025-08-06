@@ -274,7 +274,7 @@ impl Pandora {
         }
     }
 
-    pub fn drop_img_from_cache(&self, img: &String) -> Result<(), DaemonError> {
+    pub fn _drop_img_from_cache(&self, img: &String) -> Result<(), DaemonError> {
         {
             let mut images = self.images.write()?;
             images.remove(img);
