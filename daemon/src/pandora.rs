@@ -44,6 +44,7 @@ impl ThreadHandle {
                 thread_sender,
                 pandora,
                 conn,
+                crate::render::RenderVariant::Wallpaper,
             ).start();
         });
 

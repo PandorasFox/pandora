@@ -37,8 +37,14 @@ pub struct RenderThreadWaylandGlobals {
     viewport: WpViewport,
 }
 
+pub enum RenderVariant {
+    Wallpaper,
+    Lockscreen,
+}
+
 pub struct RenderThread {
     name: String,
+    kind: RenderVariant,
     receiver: Receiver<ThreadCommand>,
     _sender: Sender<String>, 
     pandora: Arc<Pandora>,
@@ -58,7 +64,7 @@ fn layer_callback(mut ctx: EventCtx<RenderThreadWaylandState, ZwlrLayerSurfaceV1
     }
 }
 
-fn initialize_wayland_handles(conn: &mut Connection<RenderThreadWaylandState>, output: String) -> RenderThreadWaylandGlobals {
+fn initialize_wayland_handles(conn: &mut Connection<RenderThreadWaylandState>, output: String, variant: &RenderVariant) -> RenderThreadWaylandGlobals {
     let (wl_output, output_info) = get_wloutput_by_name(conn, output);
     let width = output_info.mode.width;
     let height = output_info.mode.height;
@@ -74,14 +80,28 @@ fn initialize_wayland_handles(conn: &mut Connection<RenderThreadWaylandState>, o
 
     let surface = compositor.create_surface(conn);
     let viewport = viewporter.get_viewport(conn, surface);
-    let layer_surface = layer_shell.get_layer_surface(conn, surface, Some(wl_output), Layer::Background, CString::new("pandora").unwrap());
-    
-    layer_surface.set_size(conn, width as u32, height as u32);
-    layer_surface.set_anchor(conn, Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right );
-    layer_surface.set_exclusive_zone(conn, -1);
-    
-    // set callback handler for 'layer_surface.configure' event
-    conn.set_callback_for(layer_surface, layer_callback);
+    match variant {
+        RenderVariant::Wallpaper => {
+            let layer_surface = layer_shell.get_layer_surface(conn, surface, Some(wl_output), Layer::Background, CString::new("pandora").unwrap());
+            
+            layer_surface.set_size(conn, width as u32, height as u32);
+            layer_surface.set_anchor(conn, Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right );
+            layer_surface.set_exclusive_zone(conn, -1);
+            
+            // set callback handler for 'layer_surface.configure' event
+            conn.set_callback_for(layer_surface, layer_callback);
+        },
+        RenderVariant::Lockscreen => {
+            // need to get_lock_surface from ExtSessionLockV1, need to share wayland connection between threads. hmmm. uh oh.
+            // might be time to refactor this all to be Arc<>s, have one global wayland connection that display....
+            // - oh god, the render state in the connection for the frame callbacks makes this kinda annoying
+            // alternatively, i guess i can go cleanly implement a lock thread that handles all this in-house, and then
+            // refactor the wallpaper threads to be.... better, so that it's able to just pull the buffers & viewport state out
+            // that sounds better, I guess. hmm.
+            // will need to delete this bit of code later bc it's not gonna be used here lol
+        },
+    }
+
     surface.commit(conn);
     conn.blocking_roundtrip().unwrap();
 
@@ -99,9 +119,10 @@ fn initialize_wayland_handles(conn: &mut Connection<RenderThreadWaylandState>, o
 }
 
 impl RenderThread {
-    pub fn new(output: String, recv: Receiver<ThreadCommand>, send: Sender<String>, pandora: Arc<Pandora>, conn: Connection<RenderThreadWaylandState>) -> RenderThread {
+    pub fn new(output: String, recv: Receiver<ThreadCommand>, send: Sender<String>, pandora: Arc<Pandora>, conn: Connection<RenderThreadWaylandState>, variant: RenderVariant) -> RenderThread {
         return RenderThread {
             name: output,
+            kind: variant,
             receiver: recv,
             _sender: send,
             pandora: pandora,
@@ -151,7 +172,7 @@ impl RenderThread {
 
     fn render(&mut self, cmd: &RenderCommand) -> Result<(), DaemonError> {
         if self.globals.is_none() {
-            let globals = initialize_wayland_handles(&mut self.conn, cmd.output.clone());
+            let globals = initialize_wayland_handles(&mut self.conn, cmd.output.clone(), &self.kind);
             self.globals = Some(globals);
         }
         if self.render_state.is_some() { // could try to transition old state to new state/animate, maybe.

@@ -12,6 +12,9 @@ use wayrs_client::{Connection, EventCtx, IoMode};
 use crate::pandora::Pandora;
 
 // generic wayland agent for handling output plug/unplug events
+// TODO: should also listen for output mode changes => stop and (re)start affected render threads
+// should also dispatch an agent command instructing the agent to reload re-init / re-poll for output state?
+// TODO: also need this thread to reload config file somehow (sigusr1 handler? more likely than you might think....)
 pub struct OutputHandler {
     config: Option<DaemonConfig>,
     pandora: Option<Arc<Pandora>>,
@@ -80,7 +83,7 @@ fn wl_registry_cb(conn: &mut Connection<State>, state: &mut State, event: &wl_re
         wl_registry::Event::Global(global) if global.is::<WlOutput>() => {
             // kms lol
             state.outputs.push(Output::bind(conn, global));
-        }
+        },
         wl_registry::Event::GlobalRemove(name) => {
             if let Some(i) = state.outputs.iter().position(|o| o.registry_name == *name) {
                 let mut output = state.outputs.swap_remove(i);
@@ -91,7 +94,8 @@ fn wl_registry_cb(conn: &mut Connection<State>, state: &mut State, event: &wl_re
                 let _ = state.pandora.as_ref().unwrap().handle_cmd(&CommandType::Tc(cmd));
                 output.wl_output.release(conn);
             }
-        }
+        },
+        // TODO: 
         _ => (),
     }
 }

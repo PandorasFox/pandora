@@ -206,15 +206,18 @@ impl NiriProcessor {
             None => return None,
             Some(mode) => match mode {
                 RenderModeConfig::ScrollVertical => {
-                    let lower_scroll_pos_max = output.height * output.max_workspace_idx as i32;
-                    let mut one_workspace_scroll_distance = output.height;
-                    if lower_scroll_pos_max > output.img_height {
-                        one_workspace_scroll_distance = output.img_height / (output.max_workspace_idx + 1) as i32; // todo think more about this lol
-                    }
+                    let last_scroll_pos = output.img_height - output.height;
+                    let first_scroll_pos = 0;
+                    // idx 1: 0, .... idx N: last_scroll_pos
+                    // scroll pos of idx x is ((last - first) / (N - 1)) * (x-1)
+                    // scroll dist should be min(that, output_height) so that if we have too few workspaces we scroll in a continuous manner
+                    let scroll_per_workspace = output.height.min((last_scroll_pos - first_scroll_pos) / (output.max_workspace_idx - 1) as i32);
+                    let pos = scroll_per_workspace as u32 * (curr_idx - 1) as u32;
                     let cmd = ThreadCommand::Scroll(ScrollCommand {
                         output: output_name,
-                        position: one_workspace_scroll_distance as u32 * (curr_idx - 1) as u32,
+                        position: pos,
                     });
+                    println!("idx: {curr_idx}, max: {} | scroll dist {scroll_per_workspace} to {pos} | img {} , output {}", output.max_workspace_idx, output.img_height, output.height);
                     return Some(CommandType::Tc(cmd));
                 },
                 _ => return None,
