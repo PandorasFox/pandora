@@ -1,7 +1,8 @@
 use pithos::commands::{CommandType, RenderCommand, RenderMode, StopCommand, ThreadCommand};
 use pithos::config::{DaemonConfig, RenderModeConfig};
 
-use std::sync::Arc;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use wayrs_client::global::GlobalExt;
@@ -14,26 +15,31 @@ use crate::pandora::Pandora;
 // generic wayland agent for handling output plug/unplug events
 // TODO: should also listen for output mode changes => stop and (re)start affected render threads
 // should also dispatch an agent command instructing the agent to reload re-init / re-poll for output state?
-// TODO: also need this thread to reload config file somehow (sigusr1 handler? more likely than you might think....)
 pub struct OutputHandler {
     config: Option<DaemonConfig>,
     pandora: Option<Arc<Pandora>>,
+    cfg_notif: Arc<Mutex<Receiver<DaemonConfig>>>,
+    pub notif: Sender<DaemonConfig>,
 }
 
 impl OutputHandler {
     pub fn new(config: DaemonConfig, pandora: Arc<Pandora>) -> Arc<OutputHandler> {
+        let (send, recv) = channel::<DaemonConfig>();
         return Arc::new(OutputHandler {
             config: Some(config),
             pandora: Some(pandora),
+            cfg_notif: Arc::new(Mutex::new(recv)),
+            notif: send,
         });
     }
 
     pub fn start(&self) {
         let config = self.config.clone().unwrap();
         let pandora = self.pandora.clone().unwrap();
+        let cfg_notif = self.cfg_notif.clone();
         match thread::Builder::new().name("output handler".to_string())
-        .spawn(|| {
-            run(config, pandora);
+        .spawn(move || {
+            run(config, pandora, cfg_notif);
         }) {
             Ok(_) => (), // [tf2 medic voice] i will live forever!
             Err(e) => panic!("could not spawn output events handler thread: {e:?}"),
@@ -41,7 +47,7 @@ impl OutputHandler {
     }
 }   
 
-fn run(config: DaemonConfig, pandora: Arc<Pandora>) {
+fn run(config: DaemonConfig, pandora: Arc<Pandora>, cfg_notif: Arc<Mutex<Receiver<DaemonConfig>>>) {
     let mut conn = Connection::connect().unwrap();
     let mut state = State::default();
     state.config = config;
@@ -51,6 +57,17 @@ fn run(config: DaemonConfig, pandora: Arc<Pandora>) {
         conn.flush(IoMode::Blocking).unwrap();
         conn.recv_events(IoMode::Blocking).unwrap();
         conn.dispatch_events(&mut state);
+        match cfg_notif.lock() {
+            Ok(channel) => {
+                match channel.try_recv() {
+                    Ok(conf) => state.config = conf,
+                    Err(_) => (), // assuming this is just "no config sent over the wire"
+                }
+            },
+            Err(e) => {
+                log(format!("error acquiring channel lock: {e:?}"));
+            }
+        }
     }
 }
 
@@ -95,7 +112,6 @@ fn wl_registry_cb(conn: &mut Connection<State>, state: &mut State, event: &wl_re
                 output.wl_output.release(conn);
             }
         },
-        // TODO: 
         _ => (),
     }
 }
@@ -108,15 +124,26 @@ fn wl_output_cb(ctx: EventCtx<State, WlOutput>) {
         .find(|o| o.wl_output == ctx.proxy)
         .unwrap();
     match ctx.event {
+        wl_output::Event::Mode(_mode) => {
+            // emit stop command and then start command for output
+            // also emit "hey agent request output state again" command
+            // we can ctx.state.pandora.dispatch_cmd from here to do all this :)
+            // TODO
+        }
         wl_output::Event::Done => {
             let output_name = output.name.as_ref().unwrap().clone();
             let config_outputs = &ctx.state.config.outputs;
-            let output_config = config_outputs.iter().find(|oc| oc.name == output_name).expect(format!("could not find a config stanza for {output_name}").as_str());
+            let output_config = match config_outputs.iter().find(|oc| oc.name == output_name) {
+                Some(conf) => conf,
+                None => {
+                    log(format!("could not find a config stanza for {output_name}, ignoring"));
+                    return;
+                },
+            };
             let mode = match output_config.mode.as_ref() {
                 Some(m) => match m {
-                    // map the config enum onto the command enum, fetching position from agent
-                    // TODO: refactor to a simpler 'agent command', drop config and complexity
                     RenderModeConfig::Static => RenderMode::Static,
+                    // initial pos of 0 is fine because the agent picks up workspace changes and enforces reflowing
                     RenderModeConfig::ScrollVertical => RenderMode::ScrollingVertical(0),
                     RenderModeConfig::ScrollLateral => RenderMode::ScrollingLateral(0),
                 },
@@ -132,4 +159,8 @@ fn wl_output_cb(ctx: EventCtx<State, WlOutput>) {
         wl_output::Event::Name(name) => output.name = Some(name.into_string().unwrap()),
         _ => (),
     }
+}
+
+fn log(s: String) {
+    println!("> outputs: {s}");
 }

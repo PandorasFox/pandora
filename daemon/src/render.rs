@@ -6,7 +6,7 @@ use pithos::wayland::render_helpers::{get_wloutput_by_name, OutputMode, RenderSt
 use crate::pandora::Pandora;
 
 use std::ffi::CString;
-use std::sync::mpsc::{Sender, Receiver};
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::os::fd::OwnedFd;
@@ -17,36 +17,35 @@ use wayrs_client::protocol::{WlShm, wl_shm::Format, WlSurface, WlCallback, WlOut
 use wayrs_protocols::linux_dmabuf_v1::ZwpLinuxDmabufV1;
 use wayrs_protocols::viewporter::{WpViewport, WpViewporter};
 use wayrs_protocols::wlr_layer_shell_unstable_v1::{ZwlrLayerShellV1, ZwlrLayerSurfaceV1, zwlr_layer_surface_v1::Anchor, zwlr_layer_shell_v1::Layer};
-// note: output resize/mode-setting changes are currently not handled here
-// the "best" solution will probably involve a new command from the compositor agent
-// that will be sent upon an output mode/resolution change
-// currently, when my desktop sleeps for a while, it looks like my main monitor 'disconnects'
-// and then reconnects - and can't be recovered without restarting the daemon presently.
-// definitely work to be done ! 
+// note: output resize/mode-setting changes are not handled here
+// generic output plug/unplug thread handles start/stops for plug events
+// listening for mode change events is still TODO, will need to also dispatch to the compositor agent for it to update its state
+
+// lockscreen notes:
+// need to get_lock_surface from ExtSessionLockV1, 
+// i guess i can go cleanly implement a lock thread that handles that in one thread,
+// as it can manage the output surface in one draw loop. (we'll need to handle display plug/replug there, too)
+// will need to be able to ask the agent for viewport/scroll position state.
+// since we don't dump images from cache willy-nilly, we can actually maybe just pull that out of cache and have
+// the lock thread toss it straight into a new buffer, i guess
+// maybe dmabufs will help with that? really need to take a swing at that at some point, too.
 
 #[derive(Copy, Clone)]
 pub struct RenderThreadWaylandGlobals {
-    _output: WlOutput,
+    output: WlOutput,
     output_info: OutputMode,
     shm: WlShm, // shared mem singleton
     _dma: ZwpLinuxDmabufV1,
     _compositor: WlCompositor,
-    _layer_shell: ZwlrLayerShellV1,
+    layer_shell: ZwlrLayerShellV1,
     surface: WlSurface,
     _viewporter: WpViewporter,
     viewport: WpViewport,
 }
 
-pub enum RenderVariant {
-    Wallpaper,
-    Lockscreen,
-}
-
 pub struct RenderThread {
     name: String,
-    kind: RenderVariant,
     receiver: Receiver<ThreadCommand>,
-    _sender: Sender<String>, 
     pandora: Arc<Pandora>,
     conn: Connection<RenderThreadWaylandState>,
     globals: Option<RenderThreadWaylandGlobals>,
@@ -64,10 +63,8 @@ fn layer_callback(mut ctx: EventCtx<RenderThreadWaylandState, ZwlrLayerSurfaceV1
     }
 }
 
-fn initialize_wayland_handles(conn: &mut Connection<RenderThreadWaylandState>, output: String, variant: &RenderVariant) -> RenderThreadWaylandGlobals {
+fn initialize_wayland_handles(conn: &mut Connection<RenderThreadWaylandState>, output: String) -> RenderThreadWaylandGlobals {
     let (wl_output, output_info) = get_wloutput_by_name(conn, output);
-    let width = output_info.mode.width;
-    let height = output_info.mode.height;
 
     // TODO: vibe check if dma is easier/better to use in any meaningful way
     // (it's hopefully widely available?)
@@ -80,37 +77,13 @@ fn initialize_wayland_handles(conn: &mut Connection<RenderThreadWaylandState>, o
 
     let surface = compositor.create_surface(conn);
     let viewport = viewporter.get_viewport(conn, surface);
-    match variant {
-        RenderVariant::Wallpaper => {
-            let layer_surface = layer_shell.get_layer_surface(conn, surface, Some(wl_output), Layer::Background, CString::new("pandora").unwrap());
-            
-            layer_surface.set_size(conn, width as u32, height as u32);
-            layer_surface.set_anchor(conn, Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right );
-            layer_surface.set_exclusive_zone(conn, -1);
-            
-            // set callback handler for 'layer_surface.configure' event
-            conn.set_callback_for(layer_surface, layer_callback);
-        },
-        RenderVariant::Lockscreen => {
-            // need to get_lock_surface from ExtSessionLockV1, need to share wayland connection between threads. hmmm. uh oh.
-            // might be time to refactor this all to be Arc<>s, have one global wayland connection that display....
-            // - oh god, the render state in the connection for the frame callbacks makes this kinda annoying
-            // alternatively, i guess i can go cleanly implement a lock thread that handles all this in-house, and then
-            // refactor the wallpaper threads to be.... better, so that it's able to just pull the buffers & viewport state out
-            // that sounds better, I guess. hmm.
-            // will need to delete this bit of code later bc it's not gonna be used here lol
-        },
-    }
-
-    surface.commit(conn);
-    conn.blocking_roundtrip().unwrap();
 
     return RenderThreadWaylandGlobals {
-        _output: wl_output,
+        output: wl_output,
         shm: shm,
         _dma: dma,
         _compositor: compositor,
-        _layer_shell: layer_shell,
+        layer_shell,
         surface: surface,
         output_info: output_info.mode,
         _viewporter: viewporter,
@@ -119,12 +92,10 @@ fn initialize_wayland_handles(conn: &mut Connection<RenderThreadWaylandState>, o
 }
 
 impl RenderThread {
-    pub fn new(output: String, recv: Receiver<ThreadCommand>, send: Sender<String>, pandora: Arc<Pandora>, conn: Connection<RenderThreadWaylandState>, variant: RenderVariant) -> RenderThread {
+    pub fn new(output: String, recv: Receiver<ThreadCommand>, pandora: Arc<Pandora>, conn: Connection<RenderThreadWaylandState>) -> RenderThread {
         return RenderThread {
             name: output,
-            kind: variant,
             receiver: recv,
-            _sender: send,
             pandora: pandora,
             conn: conn,
             globals: None,
@@ -134,10 +105,6 @@ impl RenderThread {
 
     fn log(&self, s: String) {
         println!("> {}: {s}", self.name);
-    }
-
-    fn respond(&self, s: String) {
-        self._sender.send(s).expect("exploded when sending response to daemon");
     }
 
     pub fn start(&mut self) {
@@ -160,10 +127,26 @@ impl RenderThread {
         render_state.bufpool.destroy(&mut self.conn);
         globals.viewport.destroy(&mut self.conn);
         globals._viewporter.destroy(&mut self.conn);
-        globals._layer_shell.destroy(&mut self.conn);
+        globals.layer_shell.destroy(&mut self.conn);
         globals._dma.destroy(&mut self.conn);
         globals.surface.destroy(&mut self.conn);
         self.log("goodbye!".to_string());
+    }
+
+    fn set_layer_shell_on_surface(&mut self) {
+        let globals = self.globals.as_ref().unwrap();
+        let width = globals.output_info.width;
+        let height = globals.output_info.height;
+        let layer_surface = globals.layer_shell.get_layer_surface(&mut self.conn, globals.surface, Some(globals.output), Layer::Background, CString::new("pandora").unwrap());
+                
+        layer_surface.set_size(&mut self.conn, width as u32, height as u32);
+        layer_surface.set_anchor(&mut self.conn, Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right );
+        layer_surface.set_exclusive_zone(&mut self.conn, -1);
+                
+        // set callback handler for 'layer_surface.configure' event
+        self.conn.set_callback_for(layer_surface, layer_callback);
+        globals.surface.commit(&mut self.conn);
+        self.conn.blocking_roundtrip().unwrap();
     }
 
     // todo: generally rewrite the buffer management >.<
@@ -172,8 +155,8 @@ impl RenderThread {
 
     fn render(&mut self, cmd: &RenderCommand) -> Result<(), DaemonError> {
         if self.globals.is_none() {
-            let globals = initialize_wayland_handles(&mut self.conn, cmd.output.clone(), &self.kind);
-            self.globals = Some(globals);
+            self.globals = Some(initialize_wayland_handles(&mut self.conn, cmd.output.clone()));
+            self.set_layer_shell_on_surface();
         }
         if self.render_state.is_some() { // could try to transition old state to new state/animate, maybe.
             let render_state = self.render_state.take().unwrap();
@@ -184,8 +167,8 @@ impl RenderThread {
         let file = tempfile::tempfile().expect("creating tempfile for shared mem failed");
         let (output_width, output_height) = (globals.output_info.width as u32, globals.output_info.height as u32);
 
-        // TODO: have an option for to omit this
-        // might "want" bigger images as it will give more positional granularity for scroll spring nonsense
+        // i decided that downscaling to minimize resource footprint while maximizing quality is mandatory
+        // easier to reason about
         let scale_to = match cmd.mode {
             RenderMode::Static => Some((Some(output_width), Some(output_height))),
             RenderMode::ScrollingVertical(_) => Some((Some(output_width), None)),
@@ -194,10 +177,6 @@ impl RenderThread {
 
         let (img_width, img_height) = self.pandora.read_img_to_file(&cmd.image, &file, scale_to)?;
         self.log(format!("file loaded and scaled to {img_width} x {img_height}"));
-
-        // self.pandora.drop_img_from_cache(&cmd.image).expect("error dropping image from cache, somehow");
-
-        self.log(format!("loaded image w/ dims {} x {}", img_width, img_height));
         let bytes_per_row: i32 = img_width as i32 * 4;
         let total_bytes: i32 = bytes_per_row * img_height as i32;
 
@@ -380,7 +359,7 @@ impl RenderThread {
         render_state.scrolling = Some(scroll_state);
         self.render_state = Some(render_state);
 
-        self.respond(format!("scrolling from {} to {}, expected duration {:?} (was already scrolling: {})", scroll_state.start_pos, scroll_state.end_pos, scroll_state.anim_duration, is_already_scrolling));
+        self.log(format!("scrolling from {} to {}, expected duration {:?} (was already scrolling: {})", scroll_state.start_pos, scroll_state.end_pos, scroll_state.anim_duration, is_already_scrolling));
 
         if !is_already_scrolling {
             self.start_scroll_anim();

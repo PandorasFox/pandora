@@ -2,61 +2,52 @@ use crate::agents::niri::NiriAgent;
 use crate::agents::outputs::OutputHandler;
 use crate::ipc::InboundCommandHandler;
 use crate::render::{RenderThread};
-use image::imageops::FilterType;
+use pithos::config::load_config;
 use pithos::misc::get_new_image_dimensions;
 use pithos::wayland::render_helpers::RenderThreadWaylandState;
-use pithos::commands::{CommandType, ConfigReloadCommand, DaemonCommand, InfoCommand, LoadImageCommand, ThreadCommand};
+use pithos::commands::{CommandType, DaemonCommand, LoadImageCommand, ThreadCommand};
 use pithos::error::{CommandError, DaemonError};
 use pithos::sockets::write_response_to_client_socket;
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::os::unix::net::{UnixStream};
-use std::sync::{Arc, Mutex, RwLock};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, RwLock};
+use std::sync::mpsc::{channel, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use image::imageops::FilterType;
 use image::{RgbaImage, ImageReader};
 use wayrs_client::Connection;
 
 // daemon utility struct(s)
 pub struct ThreadHandle {
     sender: Sender<ThreadCommand>,
-    _receiver: Arc<Mutex<Receiver<String>>>,
     thread: JoinHandle<()>,
 }
 
 impl ThreadHandle {
     fn new(output: String, pandora: Arc<Pandora>) -> ThreadHandle {
         let (host_sender, thread_receiver) = channel::<ThreadCommand>();
-        let (thread_sender, host_receiver) = channel::<String>();
         let conn = Connection::<RenderThreadWaylandState>::connect().unwrap();
-
-        // realizing now that i could instead rewrite this to make an Arc<RenderThread> and just move that into
-        // the thread, and mutex-wrap a lot of state & eliminate the internal IPC. oh well! :)
-        // maybe a future refactoring fun task
 
         let thread = thread::spawn(move || {
             RenderThread::new(
                 output,
                 thread_receiver,
-                thread_sender,
                 pandora,
                 conn,
-                crate::render::RenderVariant::Wallpaper,
             ).start();
         });
 
         return ThreadHandle {
             sender: host_sender,
-            _receiver: Arc::new(Mutex::new(host_receiver)),
             thread: thread,
         };
     }
 }
 
-// daemon
 #[derive(Clone)]
 pub struct Pandora {
     cmd_ipc_thread: Option<Arc<InboundCommandHandler>>,
@@ -65,13 +56,17 @@ pub struct Pandora {
     // key: output name
     threads: Arc<RwLock<HashMap<String, ThreadHandle>>>,
     // key: file path
-    // could maybe just get rid of this table entirely tbh? it's starting to feel like uncessary overhead at this point....
-    // but i imagine it's maybe useful if you want to script switching between images frequently..... idk.
+    // useful central cache of loaded images for lockscreen etc
     images: Arc<RwLock<HashMap<String, RgbaImage>>>,
     // agent: Arc<AgentHandler>,
 }
 
 impl Pandora {
+    pub fn log(&self, s: String) {
+        // need to evaluate logging libraries & integrate clap/ipc back into main binary
+        println!("> pandora: {s}");
+    }
+
     pub fn new() -> Arc<Pandora> {
         return Arc::new(Pandora {
             cmd_ipc_thread: None,
@@ -86,37 +81,54 @@ impl Pandora {
         ipc: Arc<InboundCommandHandler>,
         outputs: Arc<OutputHandler>,
         niri: Arc<NiriAgent>,
-    ) {
+    ) -> &mut Self {
         self.cmd_ipc_thread = Some(ipc);
         self.outputs_thread = Some(outputs);
         self.niri_ag_thread = Some(niri);
+        return self;
+    }
+
+    pub fn reload_config(&self) {
+        let conf = match load_config() {
+            Ok(conf) => conf,
+            Err(e) => {
+                self.log(format!("could not load/parse config: \n{e:?}"));
+                return;
+            },
+        };
+        // if sending to the other perpetual-threads fails i am assuming shit's fucked for other reasons
+        let _ = self.outputs_thread.as_ref().unwrap().notif.send(conf.clone());
+        let _ = self.niri_ag_thread.as_ref().unwrap().notif.send(conf.clone());
     }
 
     pub fn start(&mut self) {
         self.outputs_thread.as_ref().unwrap().start();
         self.niri_ag_thread.as_ref().unwrap().start();
+        // todo: config_watcher thread
         // main thread control flow loop
+        self.log("startup completed; entering into ipc listen loop! :3".to_string());
         self.cmd_ipc_thread.as_ref().unwrap().start_listen();
     }
 
-    pub fn handle_cmd(&self, cmd: &CommandType) -> Result<&str, DaemonError> {
-        return match cmd {
+    pub fn handle_cmd(&self, cmd: &CommandType){
+        match cmd {
             CommandType::Dc(dc) => self.handle_daemon_command(&dc),
             // CommandType::Ac(ac) => {}
             CommandType::Tc(tc) => self.handle_thread_command(&tc),
         };
     }
 
-    fn handle_daemon_command(&self, dc: &DaemonCommand) -> Result<&str, DaemonError> {
-        return match dc {
-            DaemonCommand::Info(c) => self.info(c),
-            DaemonCommand::LoadImage(c) => self.load_image(c),
-            DaemonCommand::ConfigReload(c) => self.reload_config(c),
-            DaemonCommand::Stop => std::process::exit(0), // todo implement an fn that stops children, responds to command, and then dies
+    fn handle_daemon_command(&self, dc: &DaemonCommand) {
+        match dc {
+            DaemonCommand::LoadImage(c) => _ = self.load_image(c),
+            DaemonCommand::Stop => {
+                self.log("goodbye!".to_string());
+                std::process::exit(0);
+            }
         };
     }
 
-    fn handle_thread_command(&self, tc: &ThreadCommand) -> Result<&str, DaemonError> {
+    fn handle_thread_command(&self, tc: &ThreadCommand) {
         let output: String;
         let mut can_spawn = false;
         let mut join_after = false;
@@ -136,19 +148,17 @@ impl Pandora {
             }
         };
         if image_to_preload.is_some() {
-            self.handle_daemon_command(&DaemonCommand::LoadImage(LoadImageCommand { image:image_to_preload.unwrap() }))?;
+            self.handle_daemon_command(&DaemonCommand::LoadImage(LoadImageCommand { image:image_to_preload.unwrap() }));
         }
         let ret = self.dispatch_thread_command(output.clone(), &tc, can_spawn);
         if join_after && ret.is_ok() { // if a stop command error'd in dispatch, it either crashed or didn't exist; no need to clean up
             // if we full-steam ahead, we will get to .is_finished before the thread might be finished
             thread::sleep(Duration::from_millis(1)); // seems to be sufficient for letting the thread exit before we clean it up
-            return self.cleanup_thread(&output);
-        } else {
-            return ret;
+            self.cleanup_thread(&output);
         }
     }
 
-    fn dispatch_thread_command(&self, output: String, c: &ThreadCommand, spawn: bool) -> Result<&str, DaemonError> {
+    fn dispatch_thread_command(&self, output: String, c: &ThreadCommand, spawn: bool) -> Result<(), DaemonError> {
         // read lock:
         // check if thread exists, dispatch and return if it does.
         {
@@ -156,66 +166,48 @@ impl Pandora {
             match read_threads.get(&output) {
                 Some(thread) => {
                     if thread.sender.send(c.clone()).is_ok() {
-                        return Ok("dispatched command to thread");
+                        return Ok(());
                     }
-                    drop(read_threads); // kinda gross
-                    match self.cleanup_thread(&output) {
-                        Ok(_) => {
-                            return Err(CommandError::new("could not send command to thread; cleaned it up"))
-                        },
-                        Err(e) => {
-                            return Err(CommandError::new(format!("could not send command to thread; failed to clean it up: [{e:?}]").as_str()))
-                        }
+                    drop(read_threads); // drop read thread bc we're done reading & need to re-enter to clean up thread
+                    self.cleanup_thread(&output);
+                    return Err(CommandError::new("could not send command to thread; cleaned it up"));
+                },
+                None => {
+                    drop(read_threads); // release lock, result not found.
+                    if spawn {
+                       return self.spawn_thread(output, c);
+                    } else {
+                        return Err(CommandError::new("invalid thread command: thread does not exist"));
                     }
                 },
-                None => {} // doesn't exist; release lock and then re-enter outside to try to spawn a thread
             }
         }
-        if spawn {
-            return self.spawn_thread(output, c);
-        } else {
-            return Err(CommandError::new("invalid thread command: no existing render thread for this output name (Render command can spawn new threads)"));
-        }
+        
     }
 
-    fn spawn_thread(&self, output: String, c: &ThreadCommand) -> Result<&str, DaemonError> {
+    fn spawn_thread(&self, output: String, c: &ThreadCommand) -> Result<(), DaemonError> {
         let thread = ThreadHandle::new(output.clone(), Arc::new(self.clone()));
         thread.sender.send(c.clone()).expect("could not send initial command to thread after spawning");
         {
             let mut write_threads = self.threads.write()?;
             write_threads.insert(output, thread);
         }
-        return Ok("spawned thread and dispatched render command");
+        return Ok(());
     }
 
-    fn info(&self, _cmd: &InfoCommand) -> Result<&str, DaemonError> {
-        let mut answer = String::new();
-
-        {
-            let images = self.images.read()?;
-            answer += format!("items in images table: {}\n", images.len()).as_str();
-        }
-        {
-            let threads = self.threads.read()?;
-            answer += format!("items in threads table: {}\n", threads.len()).as_str();
-        }
-
-        println!("{answer}");
-
-        return Ok("daemon dumped debug info to logs");
-    }
-
-    fn load_image(&self, cmd: &LoadImageCommand) -> Result<&str, DaemonError>  {
+    fn load_image(&self, cmd: &LoadImageCommand) -> Result<(), DaemonError>  {
         let img= ImageReader::open(cmd.image.clone())?.decode()?;
         {
             let images_lock = self.images.write();
             match images_lock {
                 Ok(mut images_table) => {
                     if images_table.contains_key(&cmd.image.clone()) {
-                        return Ok("file already loaded/present in image table");
+                        self.log(format!("file {} already loaded", cmd.image.clone()));
+                        return Ok(());
                     }
                     images_table.insert(cmd.image.clone(), img.into_rgba8());
-                    return Ok("image loaded successfully");
+                    self.log(format!("file {} loaded", cmd.image.clone()));
+                    return Ok(());
                 }
                 Err(e) => Err(DaemonError::from(e)),
             }
@@ -275,58 +267,29 @@ impl Pandora {
         }
     }
 
-    pub fn _drop_img_from_cache(&self, img: &String) -> Result<(), DaemonError> {
-        {
-            let mut images = self.images.write()?;
-            images.remove(img);
-            images.shrink_to_fit();
-        }
-        Ok(())
-    }
-
-    fn reload_config(&self, _cmd: &ConfigReloadCommand) -> Result<&str, DaemonError> {
-        todo!();
-    }
-
-    fn cleanup_thread(&self, output: &String) -> Result<&str, DaemonError> {
+    fn cleanup_thread(&self, output: &String) {
         {
             let mut write_threads = self.threads.write().expect("could not acquire read lock for dispatching command");
-            return match write_threads.remove(output) {
+            match write_threads.remove(output) {
                 Some(thread) => {
                     write_threads.shrink_to_fit();
                     if thread.thread.is_finished() {
                         let _ = thread.thread.join();
-                        Ok("thread stopped successfully")
+                        return;
                     } else {
                         // can happen when a stop is issued -> daemon gets here before the thread stops
                         // .... but also could happen on a genuine wedge, so we don't want to lie about that.
-                        Err(CommandError::new("thread not stopped (wedged?)"))
+                        self.log(format!("could not join to thread for {output} (wedged?)"));
                     }
                 },
-                None => Err(CommandError::new("named thread already stopped or otherwise didn't exist")),
+                None => self.log(format!("named thread for {output} already stopped or doesn't exist")),
             }
         }
     }
 
-    pub fn process_ipc(&self, socket: &UnixStream) -> () {
+    pub fn process_ipc(&self, socket: &UnixStream) {
         let cmd = pithos::sockets::read_command_from_client_socket(&socket.try_clone().expect("couldn't clone socket"));
-        let response = match self.handle_cmd(&cmd) {
-            Ok(s) => s.to_string(),
-            Err(e) => {
-                match e {
-                    DaemonError::IoError(err) => {
-                        format!("i/o error: {err}")
-                    },
-                    DaemonError::ImageError(err) => {
-                        format!("i/o error: {err}")
-                    },
-                    DaemonError::PoisonError => {
-                        format!("lock poison error (uhhh)")
-                    },
-                    DaemonError::CommandError(err) => err.response,
-                }
-            }
-        };
-        write_response_to_client_socket(response.as_str(), socket).expect("failed to write response to inbound ipc");
+        self.handle_cmd(&cmd);
+        write_response_to_client_socket("command dispatched", socket).expect("failed to write response to inbound ipc");
     }
 }

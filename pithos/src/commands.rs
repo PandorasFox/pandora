@@ -7,19 +7,11 @@ pub enum RenderMode {
     ScrollingVertical(u32),
     ScrollingLateral(u32),
     // scrolling both directions will be trickier to implement. later problem.
+    // hello from later me: honestly it's probably easier than I thought:
+    // the agent can enforce positional state well, & correcting-on-the-fly looks better than expected
 }
 
 // ===== COMMAND STRUCTS =====
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct InfoCommand {
-    pub verbose: bool,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ConfigReloadCommand {
-    pub file: String,
-}
-
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct LoadImageCommand {
     pub image: String,
@@ -51,8 +43,6 @@ pub enum CommandType {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum DaemonCommand {
-    Info(InfoCommand),
-    ConfigReload(ConfigReloadCommand),
     LoadImage(LoadImageCommand),
     Stop,
 }
@@ -62,15 +52,4 @@ pub enum ThreadCommand {
     Render(RenderCommand),
     Stop(StopCommand),
     Scroll(ScrollCommand),
-}
-
-// TODO TESTS =)
-#[cfg(test)]
-mod tests {
-    //use super::*;
-    #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
-    }
 }

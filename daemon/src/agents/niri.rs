@@ -1,36 +1,50 @@
 use crate::pandora::Pandora;
 use pithos::commands::{CommandType, DaemonCommand, LoadImageCommand, ScrollCommand, ThreadCommand};
-use pithos::config::{load_config, DaemonConfig, RenderModeConfig};
+use pithos::config::{DaemonConfig, RenderModeConfig};
 use pithos::misc::get_new_image_dimensions;
 
 use std::collections::HashMap;
 use std::ops::Index;
-use std::sync::Arc;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use niri_ipc::{Event, Output, Request, Response, Workspace};
 use niri_ipc::socket::Socket;
 
+
+// todo: 
 pub struct NiriAgent {
     pandora: Arc<Pandora>,
+    config: DaemonConfig,
+    cfg_notif: Arc<Mutex<Receiver<DaemonConfig>>>,
+    pub notif: Sender<DaemonConfig>,
 }
 
 impl NiriAgent {
     // constructor will get handed an Arc<Pandora> later. For now, if it's none, we fall back to sending to the @pandora socket.
-    pub fn new(pandora: Arc<Pandora>) -> Arc<NiriAgent> {
+    pub fn new(config: DaemonConfig, pandora: Arc<Pandora>) -> Arc<NiriAgent> {
         match Socket::connect() {
-            Ok(_) => Arc::new(NiriAgent {
-                pandora,
-            }),
+            Ok(_) => {
+                let (send, recv) = channel::<DaemonConfig>();
+                Arc::new(NiriAgent {
+                    pandora,
+                    config,
+                    cfg_notif: Arc::new(Mutex::new(recv)),
+                    notif: send
+                })
+            },
             Err(e) => panic!("{e:?}"),
         }
     }
 
     pub fn start(&self) {
         let pandora = self.pandora.clone();
+        let config = self.config.clone();
+        let cfg_notif = self.cfg_notif.clone();
         match thread::Builder::new().name("niri agent".to_string())
             .spawn(move || {
-                run(pandora);
+                run(config, pandora, cfg_notif);
                 eprintln!("niri agent thread exiting (is session exiting?)");
             }
         ) {
@@ -40,21 +54,27 @@ impl NiriAgent {
     }
 }
 
-fn run(pandora: Arc<Pandora>) {
-    let mut socket = Socket::connect().unwrap();
-    let mut processor = NiriProcessor::default();
-    processor.config = load_config().unwrap();
-
+fn get_niri_state(socket: &mut Socket) -> (HashMap<String, Output>, Vec<Workspace>) {
     let outputs_response = match socket.send(Request::Outputs).unwrap() {
         Ok(Response::Outputs(response)) => response,
         Ok(_) => unreachable!(), // must not receive a differente type of response
-        Err(_) => return,
+        Err(e) => panic!("error getting outputs from niri: {e:?}"),
     };
     let workspaces_response = match socket.send(Request::Workspaces).unwrap() {
         Ok(Response::Workspaces(response)) => response,
         Ok(_) => unreachable!(), // must not receive a differente type of response
-        Err(_) => return,
+        Err(e) => panic!("error getting workspaces from niri: {e:?}"),
     };
+
+    return (outputs_response, workspaces_response);
+}
+
+fn run(config: DaemonConfig, pandora: Arc<Pandora>, cfg_notif: Arc<Mutex<Receiver<DaemonConfig>>>) {
+    let mut socket = Socket::connect().unwrap();
+    let mut processor = NiriProcessor::default();
+    processor.config = config;
+
+    let (outputs_response, workspaces_response) = get_niri_state(&mut socket);
     
     for cmd in processor.init_state(pandora.clone(), &outputs_response, &workspaces_response) {
         let _ = pandora.handle_cmd(&cmd);
@@ -66,6 +86,20 @@ fn run(pandora: Arc<Pandora>) {
         while let Ok(event) = read_event() {
             for cmd in processor.process(event) {
                 let _ = pandora.handle_cmd(&cmd);
+            }
+            match cfg_notif.lock() {
+                Ok(channel) => {
+                    match channel.try_recv() {
+                        Ok(conf) => {
+                            processor.config = conf
+                            // TODO: come back later and figure out what the correct post-cfg-reload action is
+                        },
+                        Err(_) => (), // assuming this is just "no config sent over the wire"
+                    }
+                },
+                Err(e) => {
+                    eprintln!("> niri-agent: error acquiring channel lock: {e:?}");
+                }
             }
         }
     }
@@ -130,7 +164,7 @@ impl NiriProcessor {
                 let cmd = DaemonCommand::LoadImage(LoadImageCommand {
                     image: img_path.clone(),
                 });
-                pandora.handle_cmd(&CommandType::Dc(cmd)).expect("couldn't load image, other stuff will explode, sorry lol");
+                pandora.handle_cmd(&CommandType::Dc(cmd));
 
                 let (image_width, image_height) = match pandora.get_image_dimensions(img_path.clone()) {
                     Ok((w, h)) => (w, h),
@@ -217,11 +251,15 @@ impl NiriProcessor {
                         output: output_name,
                         position: pos,
                     });
-                    println!("idx: {curr_idx}, max: {} | scroll dist {scroll_per_workspace} to {pos} | img {} , output {}", output.max_workspace_idx, output.img_height, output.height);
+                    self.log(format!("idx: {curr_idx}, max: {} | scroll dist {scroll_per_workspace} to {pos} | img {} , output {}", output.max_workspace_idx, output.img_height, output.height));
                     return Some(CommandType::Tc(cmd));
                 },
                 _ => return None,
             },
         };
+    }
+
+    fn log(&self, s: String) {
+        println!("> niri-agent: {s}");
     }
 }

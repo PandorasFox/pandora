@@ -8,7 +8,7 @@ edition = "2024"
 pithos = { path = "../pithos" }
 bytemuck = "1.23.1"
 image = "0.25.6"
-miette = { version = "5.1.0"}
+miette = { version = "7.6.0", features = ["fancy"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.140"
 tempfile = "3.20.0"
