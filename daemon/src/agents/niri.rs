@@ -1,5 +1,5 @@
 use crate::pandora::Pandora;
-use pithos::commands::{CommandType, DaemonCommand, LoadImageCommand, ScrollCommand, ThreadCommand};
+use pithos::commands::{CommandType, ScrollCommand, ThreadCommand};
 use pithos::config::{DaemonConfig, RenderModeConfig};
 use pithos::misc::get_new_image_dimensions;
 
@@ -161,14 +161,12 @@ impl NiriProcessor {
                 };
 
                 let img_path = output_config.image.clone();
-                let cmd = DaemonCommand::LoadImage(LoadImageCommand {
-                    image: img_path.clone(),
-                });
-                pandora.handle_cmd(&CommandType::Dc(cmd));
+
+                pandora.load_image(&img_path).unwrap(); // can explode on invalid images l0l
 
                 let (image_width, image_height) = match pandora.get_image_dimensions(img_path.clone()) {
                     Ok((w, h)) => (w, h),
-                    Err(_) => panic!("images not yet loaded, bad race condition, fixme"),
+                    Err(_) => unreachable!(), // LoadImage should've exploded
                 };
                
                 let (scaled_width, scaled_height) = get_new_image_dimensions(image_width, image_height, scale_width, scale_height);

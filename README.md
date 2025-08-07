@@ -25,6 +25,8 @@ I recommend executing this with a systemd user unit file (I know, I know). A sam
 
     cp pandora.service ~/.config/systemd/user/pandora.service && systemctl --user start pandora
 
+You can always check the logs with `journalctl -ft pandora` when running as a systemd user unit.
+
 I recommend following [niri's example systemd setup](https://github.com/YaLTeR/niri/wiki/Example-systemd-Setup) to leverage `niri.service.wants` if you have multiple compositors installed, and only want to use this with niri at the moment.
 
 You will also need the following in your niri config:
@@ -34,7 +36,13 @@ You will also need the following in your niri config:
       place-within-backdrop true
     }
 
+## considerations
 
+Due to image geometry being critical for Pandora's many threads to operate across the board,
+some components (such as the Niri agent) won't be able to start up if an invalid or non-existant image is specified in
+the config file.
+
+The config file will live-reload if-and-only-if it can successfully (pre)load every image in the config file, which should make this easier.
 
 ## misc notes
 

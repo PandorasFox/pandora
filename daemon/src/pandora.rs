@@ -120,7 +120,7 @@ impl Pandora {
 
     fn handle_daemon_command(&self, dc: &DaemonCommand) {
         match dc {
-            DaemonCommand::LoadImage(c) => _ = self.load_image(c),
+            DaemonCommand::LoadImage(c) => _ = self.load_image(&c.image.clone()),
             DaemonCommand::Stop => {
                 self.log("goodbye!".to_string());
                 std::process::exit(0);
@@ -195,21 +195,21 @@ impl Pandora {
         return Ok(());
     }
 
-    fn load_image(&self, cmd: &LoadImageCommand) -> Result<(), DaemonError>  {
-        let img= ImageReader::open(cmd.image.clone())?.decode()?;
+    pub fn load_image(&self, path: &String) -> Result<(), DaemonError>  {
+        let img= ImageReader::open(path.clone())?.decode()?;
         {
             let images_lock = self.images.write();
             match images_lock {
                 Ok(mut images_table) => {
-                    if images_table.contains_key(&cmd.image.clone()) {
-                        self.log(format!("file {} already loaded", cmd.image.clone()));
+                    if images_table.contains_key(&path.clone()) {
+                        self.log(format!("file {} already loaded", path.clone()));
                         return Ok(());
                     }
-                    images_table.insert(cmd.image.clone(), img.into_rgba8());
-                    self.log(format!("file {} loaded", cmd.image.clone()));
+                    images_table.insert(path.clone(), img.into_rgba8());
+                    self.log(format!("file {} loaded", path.clone()));
                     return Ok(());
                 }
-                Err(e) => Err(DaemonError::from(e)),
+                Err(e) => panic!("{e:?}"),
             }
         }
     }
