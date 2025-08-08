@@ -11,14 +11,14 @@ but I'm open to implementing other compositor IPC agents once it is feature-comp
     cargo install
 
 ### usage
-Make sure you copy the included `pandora.kdl` to `~/.config/pandora.kdl`
+Make sure you copy the included `sample files/pandora.kdl` to `~/.config/pandora.kdl`
 (or `$XDG_CONFIG_HOME/pandora.kdl`), and edit it to reflect your outputs
 and desired wallpapers. It has some placeholder values of the various options
 (a few of which, like triggers and lockscreen state, are to-be-implemented).
 
 I recommend executing this with a systemd user unit file. A sample service file is included in the repo:
 
-    cp pandora.service ~/.config/systemd/user/pandora.service && systemctl --user enable --now pandora
+    cp 'sample files/pandora.service' ~/.config/systemd/user/pandora.service && systemctl --user enable --now pandora
 
 You can always check the logs with `journalctl -ft pandora` when running as a systemd user unit.
 
