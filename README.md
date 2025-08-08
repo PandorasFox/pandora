@@ -1,12 +1,10 @@
 # pandora
 
 pandora is a parallax-scrolling wallpaper daemon for wayland systems.
+it is primary intended to be used with [niri](https://github.com/yaLTeR/niri) and bound to its IPC stream,
+but I'm open to implementing other compositor IPC agents once it is feature-complete.
 
-> ![NOTE]
-> pandora is primary intended to be used with [niri](https://github.com/yaLTeR/niri) and bound to its IPC stream,
-> but I'm open to implementing other compositor IPC agents once this is more feature-complete.
-
-> ![NOTE]
+> [!NOTE]
 > pandora is functional, performant, and generally usable. New feature extensions (such as lockscreen functionality) are still being implemented.
 
 ## installing
