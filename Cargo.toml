@@ -1,10 +1,6 @@
-# [workspace]
-# members = [ "daemon", "pithos" ]  # TODO refactor everything into one crate that's binary+lib
-# resolver = "3"
-
 [package]
 name = "pandora"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 
 [dependencies]
