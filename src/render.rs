@@ -19,7 +19,6 @@ use wayrs_protocols::viewporter::{WpViewport, WpViewporter};
 use wayrs_protocols::wlr_layer_shell_unstable_v1::{ZwlrLayerShellV1, ZwlrLayerSurfaceV1, zwlr_layer_surface_v1::Anchor, zwlr_layer_shell_v1::Layer};
 // note: output resize/mode-setting changes are not handled here
 // generic output plug/unplug thread handles start/stops for plug events
-// listening for mode change events is still TODO, will need to also dispatch to the compositor agent for it to update its state
 
 // lockscreen notes:
 // need to get_lock_surface from ExtSessionLockV1, 
