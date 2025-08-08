@@ -1,9 +1,8 @@
-use pithos::config::load_config;
 mod pandora;
 mod ipc;
 mod render;
 mod agents;
-
+use ::pandora::config::load_config;
 use std::sync::Arc;
 
 fn main() -> miette::Result<()> {

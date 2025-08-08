@@ -1,7 +1,7 @@
 use crate::pandora::Pandora;
-use pithos::commands::{CommandType, DaemonCommand, ModeCommand, RenderMode, RenderThreadCommand, ScrollCommand};
-use pithos::config::DaemonConfig;
-use pithos::misc::get_new_image_dimensions;
+use ::pandora::commands::{CommandType, DaemonCommand, ModeCommand, RenderMode, RenderThreadCommand, ScrollCommand};
+use ::pandora::config::DaemonConfig;
+use ::pandora::misc::get_new_image_dimensions;
 
 use std::collections::HashMap;
 use std::ops::Index;

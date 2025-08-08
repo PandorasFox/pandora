@@ -1,7 +1,7 @@
-use pithos::anims::spring::{Spring, SpringParams};
-use pithos::commands::{RenderCommand, RenderMode, ScrollCommand, RenderThreadCommand};
-use pithos::error::DaemonError;
-use pithos::wayland::render_helpers::{get_wloutput_by_name, OutputMode, RenderState, RenderThreadWaylandState, ScrollState};
+use ::pandora::anims::spring::{Spring, SpringParams};
+use ::pandora::commands::{RenderCommand, RenderMode, ScrollCommand, RenderThreadCommand};
+use ::pandora::error::DaemonError;
+use ::pandora::wayland::render_helpers::{get_wloutput_by_name, OutputMode, RenderState, RenderThreadWaylandState, ScrollState};
 
 use crate::pandora::Pandora;
 

@@ -1,5 +1,5 @@
-use pithos::commands::{CommandType, DaemonCommand, ModeCommand, RenderCommand, RenderMode, RenderThreadCommand, StopCommand};
-use pithos::config::DaemonConfig;
+use ::pandora::commands::{CommandType, DaemonCommand, ModeCommand, RenderCommand, RenderMode, RenderThreadCommand, StopCommand};
+use ::pandora::config::DaemonConfig;
 
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, Weak};

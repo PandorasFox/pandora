@@ -1,3 +1,24 @@
-[workspace]
-members = [ "daemon", "pithos" ]  # TODO refactor everything into one crate that's binary+lib
-resolver = "3"
+# [workspace]
+# members = [ "daemon", "pithos" ]  # TODO refactor everything into one crate that's binary+lib
+# resolver = "3"
+
+[package]
+name = "pandora"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+bytemuck = "1.23.1"
+image = "0.25.6"
+knuffel = "3.2.0"
+miette = { version = "5.1.0", features = ["fancy"] }
+niri-ipc = "=25.5.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.140"
+shellexpand = "3.1.1"
+tempfile = "3.20.0"
+wayrs-client = "1.3.1"
+wayrs-protocols = { version = "0.14", features = ["wlr-layer-shell-unstable-v1", "linux-dmabuf-v1", "viewporter"] }
+wayrs-utils = { version = "0.17" }
+
+
