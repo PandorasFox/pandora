@@ -22,7 +22,7 @@ impl InboundCommandHandler {
         });
     }
 
-    pub fn start_listen(&self, pandora: Weak<Pandora>) {
+    pub fn start(&self, pandora: Weak<Pandora>) {
         for connection in self.listener.incoming() {
             let p = pandora.upgrade().take().unwrap();
             thread::spawn(move || 

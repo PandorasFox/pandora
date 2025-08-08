@@ -1,4 +1,5 @@
 use crate::pandora::Pandora;
+use pandora::pithos::commands::RenderCommand;
 use ::pandora::pithos::commands::{CommandType, DaemonCommand, ModeCommand, RenderMode, RenderThreadCommand, ScrollCommand};
 use ::pandora::pithos::config::DaemonConfig;
 use ::pandora::pithos::misc::get_new_image_dimensions;
@@ -19,7 +20,6 @@ pub struct NiriAgent {
 }
 
 impl NiriAgent {
-    // constructor will get handed an Arc<Pandora> later. For now, if it's none, we fall back to sending to the @pandora socket.
     pub fn new(config: DaemonConfig) -> Arc<NiriAgent> {
         match Socket::connect() {
             Ok(_) => {
@@ -91,11 +91,20 @@ fn run(config: DaemonConfig, pandora: Arc<Pandora>, cmd_queue: Arc<Mutex<Receive
                                         pandora.handle_cmd(&cmd);
                                     }
                                 },
-                                DaemonCommand::ReloadConfig(config) => processor.config = config,
+                                DaemonCommand::ReloadConfig(config) => {
+                                    let mut cmds = processor.update_config(config, pandora.clone());
+                                    if cmds.len() != 0 {
+                                        cmds.append(&mut processor.reseat_scroll_positions());
+                                    }
+                                    for cmd in cmds {
+                                        pandora.handle_cmd(&cmd);
+                                    }
+
+                                }
                                 DaemonCommand::LoadImage(_) | DaemonCommand::Stop => (),
                             }
                         },
-                        Err(_) => (), // assuming this is just "no config sent over the wire"
+                        Err(_) => (), // ??
                     }
                 },
                 Err(e) => {
@@ -126,6 +135,53 @@ struct NiriProcessor {
 }
 
 impl NiriProcessor {
+    fn update_config(&mut self, new_config: DaemonConfig, pandora: Arc<Pandora>) -> Vec<CommandType> {
+        // this kinda sucks and i should really really rewrite it into an "update state" or something
+        let mut cmds = Vec::<CommandType>::new();
+        for new_output_conf in &new_config.outputs {
+            let new_mode = new_output_conf.mode.unwrap_or(RenderMode::Static);
+            let (output_name, state) = match self.outputs.iter_mut()
+            .find(|o| o.0 == new_output_conf.name) {
+                Some(v) => v,
+                None => continue,
+            };
+            // 🤮 im so sorry im so sorry 🤮
+            // this is without a doubt some of the grossest code ive written, all in the name of relatively seamless
+            // live config reloading for the end users...... they know not nor care not about my sins, probably
+            if state._current_image != new_output_conf.image || state.mode.unwrap_or(RenderMode::Static) != new_mode {
+                // really hacky state updating in place. brittle. YEEHAW
+                if pandora.load_image(&new_output_conf.image.clone()).is_err() {
+                    log(format!("failed to load {} for {} (does it exist?)", new_output_conf.image.clone(), new_output_conf.name.clone()));
+                }
+                let (image_width, image_height) = match pandora.get_image_dimensions(new_output_conf.image.clone()) {
+                    Ok((w, h)) => (w, h),
+                    Err(_) => unreachable!(), // LoadImage should've exploded
+                };
+
+                let (scale_width, scale_height) = match &new_mode {
+                    RenderMode::Static => (Some(state.width as u32), Some(state.height as u32)),
+                    RenderMode::ScrollVertical => (Some(state.width as u32), None),
+                    RenderMode::ScrollLateral => (None, Some(state.height as u32))
+                };
+
+                let (scaled_width, scaled_height) = get_new_image_dimensions(image_width, image_height, scale_width, scale_height);
+
+                state._current_image = new_output_conf.image.clone();
+                state.mode = Some(new_mode);
+                state._img_width = scaled_width as i32;
+                state.img_height = scaled_height as i32;
+                let cmd = RenderCommand {
+                    output: output_name.clone(),
+                    image: new_output_conf.image.clone(),
+                    mode: new_mode,
+                };
+                cmds.push(CommandType::Tc(RenderThreadCommand::Render(cmd)));
+            }  
+        }
+        self.config = new_config;
+        return cmds;
+    }
+
     fn update_mode(&mut self, new_mode: ModeCommand) {
         self.outputs.iter_mut()
         .find(|o| o.0 == new_mode.output)
@@ -246,7 +302,13 @@ impl NiriProcessor {
             Some(o) => o,
             None => return None, // focused a workspace while no outputs connected / all outputs unplugged. whatever lol
         };
-        let output = &self.outputs.iter().find(|o| o.0 == output_name).unwrap().1;
+        let output = match &self.outputs.iter().find(|o| o.0 == output_name) {
+            Some(tuple) => &tuple.1,
+            None => {
+                log(format!("{output_name} not found in config; ignoring"));
+                return None; // display not configured
+            }
+        };
         match &output.mode {
             None => return None,
             Some(mode) => match mode {
@@ -262,15 +324,15 @@ impl NiriProcessor {
                         output: output_name,
                         position: pos,
                     });
-                    self.log(format!("idx: {curr_idx}, max: {} | scroll dist {scroll_per_workspace} to {pos} | img {} , output {}", output.max_workspace_idx, output.img_height, output.height));
+                    log(format!("idx: {curr_idx}, max: {} | scroll dist {scroll_per_workspace} to {pos} | img {} , output {}", output.max_workspace_idx, output.img_height, output.height));
                     return Some(CommandType::Tc(cmd));
                 },
                 _ => return None,
             },
         };
     }
+}
 
-    fn log(&self, s: String) {
-        println!("> niri-agent: {s}");
-    }
+fn log(s: String) {
+    println!("> niri-agent: {s}");
 }

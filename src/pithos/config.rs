@@ -1,4 +1,4 @@
-use std::{env, fs, path::Path};
+use std::{env, fs, path::{Path, PathBuf}, thread, time::Duration};
 
 use super::commands::RenderMode;
 
@@ -64,15 +64,47 @@ pub struct DaemonConfig {
     // lockscreen: LockscreenConfig,
 }
 
-pub fn load_config() -> miette::Result<DaemonConfig> {
-    //let mut config_path = PathBuf::new();
+pub fn get_config_dir() -> PathBuf {
     let base_dir = match env::var("XDG_CONFIG_HOME") {
         Ok(s) => shellexpand::full(&s).unwrap().into_owned(),
         Err(_) => shellexpand::full("~/.config").unwrap().into_owned(),
     };
-    let config_path = Path::new(&base_dir).join("pandora.kdl");
-    let config_file_contents = fs::read_to_string(config_path.clone()).unwrap();
-    let config_nodes = knuffel::parse::<Vec<ConfigNode>>(config_path.to_str().unwrap(), config_file_contents.as_str())?;
+    return Path::new(&base_dir).join("pandora");
+}
+
+fn try_load_file(path: &PathBuf) -> Option<String> {
+    // vim and some other editors will write to a swap buffer, then upon save, copy the swap over the original
+    // this lead to weird race conditions. we fight this by doing a few fs::exists and and read attempts in a row
+    // with some micro sleeps between attempts. miette! if we fail a few times in a row.
+    for _ in 1..3 {
+        if path.exists() {
+            match fs::read_to_string(path) {
+                Ok(s) => return Some(s),
+                Err(_) => ()
+            }
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    None
+}
+
+static mut LAST_CONFIG_FILE_CONTENTS: String = String::new();
+
+pub fn load_config() -> miette::Result<DaemonConfig> {
+    let config_dir = get_config_dir();
+    let config_path = config_dir.join("pandora.kdl");
+    let config_file_contents = try_load_file(&config_path);
+    if config_file_contents.is_none() {
+        return Err(miette::miette!("Could not load config file from fs (if editing with vim, try backupcopy yes)"));
+    }
+
+    unsafe { // hot reloading config files while also debouncing the reloads is fucking annoying :/ 
+        if LAST_CONFIG_FILE_CONTENTS == config_file_contents.clone().unwrap() {
+            return Err(miette::miette!("config file contents unchanged since last reload"));
+        }
+    }
+
+    let config_nodes = knuffel::parse::<Vec<ConfigNode>>(config_path.to_str().unwrap(), config_file_contents.clone().unwrap().as_str())?;
     
     let mut config = DaemonConfig { outputs: Vec::new() };
     for node in config_nodes {
@@ -92,5 +124,8 @@ pub fn load_config() -> miette::Result<DaemonConfig> {
         }
     }
 
+    unsafe { // lol
+        LAST_CONFIG_FILE_CONTENTS = config_file_contents.unwrap();
+    }
     return Ok(config);
 }

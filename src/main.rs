@@ -11,12 +11,13 @@ fn main() -> miette::Result<()> {
     let ipc = crate::threads::ipc::InboundCommandHandler::new();
     let outputs = crate::threads::outputs::OutputHandler::new(config.clone());
     let niri = crate::threads::niri::NiriAgent::new(config.clone());
-    // config_watcher thread next!
+    let config_watcher = crate::threads::config::ConfigWatcher::new();
 
     Arc::make_mut(&mut pandora).bind_threads(
         ipc.clone(),
         outputs.clone(),
         niri.clone(),
+        config_watcher.clone(),
     );
     // give the subthreads a weak pointer now that we're done mutating pandora into some sort of daemon
     let weak = Arc::downgrade(&pandora);

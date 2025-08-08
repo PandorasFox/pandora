@@ -1,3 +1,4 @@
+use crate::threads::config::ConfigWatcher;
 use crate::threads::niri::NiriAgent;
 use crate::threads::outputs::OutputHandler;
 use crate::threads::ipc::InboundCommandHandler;
@@ -52,6 +53,7 @@ pub struct Pandora {
     cmd_ipc_thread: Option<Arc<InboundCommandHandler>>,
     outputs_thread: Option<Arc<OutputHandler>>,
     niri_ag_thread: Option<Arc<NiriAgent>>,
+    configw_thread: Option<Arc<ConfigWatcher>>,
     // key: output name
     threads: Arc<RwLock<HashMap<String, ThreadHandle>>>,
     // key: file path
@@ -71,6 +73,7 @@ impl Pandora {
             cmd_ipc_thread: None,
             outputs_thread: None,
             niri_ag_thread: None,
+            configw_thread: None,
             threads: Arc::new(RwLock::new(HashMap::<String, ThreadHandle>::new())),
             images: Arc::new(RwLock::new(HashMap::<String, RgbaImage>::new())),
         });
@@ -80,10 +83,12 @@ impl Pandora {
         ipc: Arc<InboundCommandHandler>,
         outputs: Arc<OutputHandler>,
         niri: Arc<NiriAgent>,
+        config: Arc<ConfigWatcher>,
     ) -> &mut Self {
         self.cmd_ipc_thread = Some(ipc);
         self.outputs_thread = Some(outputs);
         self.niri_ag_thread = Some(niri);
+        self.configw_thread = Some(config);
         return self;
     }
 
@@ -96,10 +101,10 @@ impl Pandora {
     pub fn start(&self, weak: Weak<Pandora> ) {
         self.outputs_thread.as_ref().unwrap().start(weak.clone());
         self.niri_ag_thread.as_ref().unwrap().start(weak.clone());
-        // todo: config_watcher thread
+        self.configw_thread.as_ref().unwrap().start(weak.clone());
         // main thread control flow loop
         self.log("startup completed; entering into ipc listen loop! :3".to_string());
-        self.cmd_ipc_thread.as_ref().unwrap().start_listen(weak);
+        self.cmd_ipc_thread.as_ref().unwrap().start(weak);
     }
 
     pub fn handle_cmd(&self, cmd: &CommandType){

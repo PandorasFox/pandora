@@ -2,7 +2,7 @@ use serde::{Serialize, Deserialize};
 
 use super::config::DaemonConfig;
 // ===== TRAITS AND MISC DATA STRUCTS =====
-#[derive(knuffel::DecodeScalar, Serialize, Deserialize, Copy, Clone, Debug)]
+#[derive(knuffel::DecodeScalar, Serialize, Deserialize, PartialEq, Copy, Clone, Debug)]
 pub enum RenderMode {
     // single image
     Static, // will scale up/down to fill

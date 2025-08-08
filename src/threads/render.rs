@@ -161,6 +161,7 @@ impl RenderThread {
             let render_state = self.render_state.take().unwrap();
             render_state.buffer.destroy(&mut self.conn);
             render_state.bufpool.destroy(&mut self.conn);
+            // apparently explodes a bit? image updates, but then scrolling no longer works.
         }
         let globals = self.globals.take().unwrap();
         let file = tempfile::tempfile().expect("creating tempfile for shared mem failed");

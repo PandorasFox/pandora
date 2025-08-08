@@ -54,11 +54,15 @@ fn run(config: DaemonConfig, pandora: Arc<Pandora>, cmd_queue: Arc<Mutex<Receive
         match cmd_queue.lock() {
             Ok(channel) => {
                 match channel.try_recv() {
-                    Ok(_conf) => {
-                        // TODO handle cmds
-                        //state.config = conf,
+                    Ok(cmd) => {
+                        match cmd {
+                            DaemonCommand::ReloadConfig(config) => {
+                                state.config = config;
+                            }
+                            _ => (),
+                        }
                     }
-                    Err(_) => (), // assuming this is just "no config sent over the wire"
+                    Err(_) => (), // ??
                 }
             },
             Err(e) => {

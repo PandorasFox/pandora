@@ -8,10 +8,14 @@ but I'm open to implementing other compositor IPC agents once it is feature-comp
 > pandora is functional, performant, and generally usable. New feature extensions (such as lockscreen functionality) are still being implemented.
 
 ## installing
-    cargo install
+    cargo install --path .
 
 ### usage
-Make sure you copy the included `sample files/pandora.kdl` to `~/.config/pandora.kdl`
+
+> [!NOTE]
+> config file moved to its own directory because of inode shenanigans
+
+Make sure you copy the included `sample files/pandora.kdl` to `~/.config/pandora/pandora.kdl`
 (or `$XDG_CONFIG_HOME/pandora.kdl`), and edit it to reflect your outputs
 and desired wallpapers. It has some placeholder values of the various options
 (a few of which, like triggers and lockscreen state, are to-be-implemented).
