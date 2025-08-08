@@ -1,6 +1,6 @@
-use ::pandora::anims::spring::{Spring, SpringParams};
-use ::pandora::commands::{RenderCommand, RenderMode, ScrollCommand, RenderThreadCommand};
-use ::pandora::error::DaemonError;
+use ::pandora::pithos::anims::spring::{Spring, SpringParams};
+use ::pandora::pithos::commands::{RenderCommand, RenderMode, ScrollCommand, RenderThreadCommand};
+use ::pandora::pithos::error::DaemonError;
 use ::pandora::wayland::render_helpers::{get_wloutput_by_name, OutputMode, RenderState, RenderThreadWaylandState, ScrollState};
 
 use crate::pandora::Pandora;

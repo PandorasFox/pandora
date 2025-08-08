@@ -1,12 +1,12 @@
-use crate::agents::niri::NiriAgent;
-use crate::agents::outputs::OutputHandler;
-use crate::ipc::InboundCommandHandler;
-use crate::render::{RenderThread};
-use ::pandora::misc::get_new_image_dimensions;
+use crate::threads::niri::NiriAgent;
+use crate::threads::outputs::OutputHandler;
+use crate::threads::ipc::InboundCommandHandler;
+use crate::threads::render::{RenderThread};
+use ::pandora::pithos::misc::get_new_image_dimensions;
+use ::pandora::pithos::commands::{CommandType, DaemonCommand, LoadImageCommand, RenderThreadCommand};
+use ::pandora::pithos::error::{CommandError, DaemonError};
+use ::pandora::pithos::sockets::write_response_to_client_socket;
 use ::pandora::wayland::render_helpers::RenderThreadWaylandState;
-use ::pandora::commands::{CommandType, DaemonCommand, LoadImageCommand, RenderThreadCommand};
-use ::pandora::error::{CommandError, DaemonError};
-use ::pandora::sockets::write_response_to_client_socket;
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -246,7 +246,7 @@ impl Pandora {
             match scale_to {
                 Some((maybe_width, maybe_height)) => {
                     let (new_width, new_height) = get_new_image_dimensions(image.width(), image.height(), maybe_width, maybe_height);
-                    ::pandora::misc::img_into_buffer(
+                    ::pandora::pithos::misc::img_into_buffer(
                         &image::imageops::resize(
                         image,
                         new_width as u32,
@@ -258,7 +258,7 @@ impl Pandora {
                     return Ok((new_width, new_height));
                 },
                 None => {
-                    ::pandora::misc::img_into_buffer(image, &f);
+                    ::pandora::pithos::misc::img_into_buffer(image, &f);
                     return Ok((image.width(), image.height()));
                 }
             };
@@ -286,7 +286,7 @@ impl Pandora {
     }
 
     pub fn process_ipc(&self, socket: &UnixStream) {
-        let cmd = ::pandora::sockets::read_command_from_client_socket(&socket.try_clone().expect("couldn't clone socket"));
+        let cmd = ::pandora::pithos::sockets::read_command_from_client_socket(&socket.try_clone().expect("couldn't clone socket"));
         self.handle_cmd(&cmd);
         write_response_to_client_socket("command dispatched", socket).expect("failed to write response to inbound ipc");
     }

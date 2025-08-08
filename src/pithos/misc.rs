@@ -1,5 +1,4 @@
 use std::{fs::File, io::Write};
-
 use image::RgbaImage;
 
 pub fn img_into_buffer(img: &RgbaImage, f: &File) {

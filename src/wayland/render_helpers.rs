@@ -1,5 +1,4 @@
-use crate::anims::spring::Spring;
-use crate::commands::RenderMode;
+use crate::pithos::{anims::spring::Spring, commands::RenderMode};
 
 use std::fs::File;
 use std::time::{Duration, Instant};

@@ -1,6 +1,6 @@
 use std::{env, fs, path::Path};
 
-use crate::commands::RenderMode;
+use super::commands::RenderMode;
 
 #[derive(Clone, Debug, knuffel::Decode, serde::Serialize, serde::Deserialize)]
 pub enum ConfigNode {

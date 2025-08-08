@@ -1,6 +1,6 @@
 use serde::{Serialize, Deserialize};
 
-use crate::config::DaemonConfig;
+use super::config::DaemonConfig;
 // ===== TRAITS AND MISC DATA STRUCTS =====
 #[derive(knuffel::DecodeScalar, Serialize, Deserialize, Copy, Clone, Debug)]
 pub enum RenderMode {

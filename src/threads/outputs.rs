@@ -1,8 +1,6 @@
-use ::pandora::commands::{CommandType, DaemonCommand, ModeCommand, RenderCommand, RenderMode, RenderThreadCommand, StopCommand};
-use ::pandora::config::DaemonConfig;
+use ::pandora::pithos::{config::DaemonConfig, commands::{CommandType, DaemonCommand, ModeCommand, RenderCommand, RenderMode, RenderThreadCommand, StopCommand}};
 
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, Weak, mpsc::{channel, Receiver, Sender}};
 use std::thread;
 
 use wayrs_client::global::GlobalExt;
