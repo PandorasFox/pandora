@@ -1,8 +1,8 @@
-use pithos::commands::{CommandType, RenderCommand, RenderMode, StopCommand, ThreadCommand};
-use pithos::config::{DaemonConfig, RenderModeConfig};
+use pithos::commands::{CommandType, DaemonCommand, ModeCommand, RenderCommand, RenderMode, RenderThreadCommand, StopCommand};
+use pithos::config::DaemonConfig;
 
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 
 use wayrs_client::global::GlobalExt;
@@ -13,33 +13,29 @@ use wayrs_client::{Connection, EventCtx, IoMode};
 use crate::pandora::Pandora;
 
 // generic wayland agent for handling output plug/unplug events
-// TODO: should also listen for output mode changes => stop and (re)start affected render threads
-// should also dispatch an agent command instructing the agent to reload re-init / re-poll for output state?
 pub struct OutputHandler {
     config: Option<DaemonConfig>,
-    pandora: Option<Arc<Pandora>>,
-    cfg_notif: Arc<Mutex<Receiver<DaemonConfig>>>,
-    pub notif: Sender<DaemonConfig>,
+    cmd_queue: Arc<Mutex<Receiver<DaemonCommand>>>,
+    pub queue: Sender<DaemonCommand>,
 }
 
 impl OutputHandler {
-    pub fn new(config: DaemonConfig, pandora: Arc<Pandora>) -> Arc<OutputHandler> {
-        let (send, recv) = channel::<DaemonConfig>();
+    pub fn new(config: DaemonConfig) -> Arc<OutputHandler> {
+        let (send, recv) = channel::<DaemonCommand>();
         return Arc::new(OutputHandler {
             config: Some(config),
-            pandora: Some(pandora),
-            cfg_notif: Arc::new(Mutex::new(recv)),
-            notif: send,
+            cmd_queue: Arc::new(Mutex::new(recv)),
+            queue: send,
         });
     }
 
-    pub fn start(&self) {
+    pub fn start(&self, weak: Weak<Pandora>) {
+        let pandora = weak.upgrade().unwrap();
         let config = self.config.clone().unwrap();
-        let pandora = self.pandora.clone().unwrap();
-        let cfg_notif = self.cfg_notif.clone();
+        let cmd_queue = self.cmd_queue.clone();
         match thread::Builder::new().name("output handler".to_string())
         .spawn(move || {
-            run(config, pandora, cfg_notif);
+            run(config, pandora, cmd_queue);
         }) {
             Ok(_) => (), // [tf2 medic voice] i will live forever!
             Err(e) => panic!("could not spawn output events handler thread: {e:?}"),
@@ -47,7 +43,7 @@ impl OutputHandler {
     }
 }   
 
-fn run(config: DaemonConfig, pandora: Arc<Pandora>, cfg_notif: Arc<Mutex<Receiver<DaemonConfig>>>) {
+fn run(config: DaemonConfig, pandora: Arc<Pandora>, cmd_queue: Arc<Mutex<Receiver<DaemonCommand>>>) {
     let mut conn = Connection::connect().unwrap();
     let mut state = State::default();
     state.config = config;
@@ -57,10 +53,13 @@ fn run(config: DaemonConfig, pandora: Arc<Pandora>, cfg_notif: Arc<Mutex<Receive
         conn.flush(IoMode::Blocking).unwrap();
         conn.recv_events(IoMode::Blocking).unwrap();
         conn.dispatch_events(&mut state);
-        match cfg_notif.lock() {
+        match cmd_queue.lock() {
             Ok(channel) => {
                 match channel.try_recv() {
-                    Ok(conf) => state.config = conf,
+                    Ok(_conf) => {
+                        // TODO handle cmds
+                        //state.config = conf,
+                    }
                     Err(_) => (), // assuming this is just "no config sent over the wire"
                 }
             },
@@ -83,6 +82,7 @@ struct Output {
     registry_name: u32,
     wl_output: WlOutput,
     name: Option<String>,
+    done: bool,
 }
 
 impl Output {
@@ -91,6 +91,7 @@ impl Output {
             registry_name: global.name,
             wl_output: global.bind_with_cb(conn, 3..=4, wl_output_cb).unwrap(),
             name: None,
+            done: false,
         }
     }
 }
@@ -105,7 +106,7 @@ fn wl_registry_cb(conn: &mut Connection<State>, state: &mut State, event: &wl_re
             if let Some(i) = state.outputs.iter().position(|o| o.registry_name == *name) {
                 let mut output = state.outputs.swap_remove(i);
                 let output_name = output.name.take().unwrap();
-                let cmd = ThreadCommand::Stop(StopCommand {
+                let cmd = RenderThreadCommand::Stop(StopCommand {
                     output: output_name,
                 });
                 let _ = state.pandora.as_ref().unwrap().handle_cmd(&CommandType::Tc(cmd));
@@ -117,20 +118,50 @@ fn wl_registry_cb(conn: &mut Connection<State>, state: &mut State, event: &wl_re
 }
 
 fn wl_output_cb(ctx: EventCtx<State, WlOutput>) {
+    let pandora = ctx.state.pandora.as_ref().unwrap();
     let output = &mut ctx
         .state
         .outputs
         .iter_mut()
         .find(|o| o.wl_output == ctx.proxy)
-        .unwrap();
+        .expect("could not find matching wl_output in vec");
+
     match ctx.event {
-        wl_output::Event::Mode(_mode) => {
-            // emit stop command and then start command for output
-            // also emit "hey agent request output state again" command
-            // we can ctx.state.pandora.dispatch_cmd from here to do all this :)
-            // TODO
+        wl_output::Event::Mode(new_mode) => {
+            if output.done { // do not try to dispatch this during initial startup
+                let output_name = output.name.as_ref().unwrap().clone();
+                let config_outputs = &ctx.state.config.outputs;
+                let output_config = match config_outputs.iter().find(|oc| oc.name == output_name) {
+                    Some(conf) => conf,
+                    None => {
+                        log(format!("could not find a config stanza for {output_name}, ignoring"));
+                        return;
+                    },
+                };
+                let mode = match output_config.mode {
+                    Some(m) => m,
+                    None => RenderMode::Static,
+                };
+                let stop_cmd = RenderThreadCommand::Stop(StopCommand {
+                    output: output_name.clone(),
+                });
+                let start_cmd = RenderThreadCommand::Render(RenderCommand {
+                    output: output_name.clone(),
+                    image: output_config.image.clone(),
+                    mode: mode,
+                });
+                let mode_cmd = DaemonCommand::OutputModeChange(ModeCommand {
+                    output: output_name.clone(),
+                    new_width: new_mode.width,
+                    new_height: new_mode.height,
+                });
+                pandora.handle_cmd(&CommandType::Tc(stop_cmd));
+                pandora.handle_cmd(&CommandType::Tc(start_cmd));
+                pandora.handle_cmd(&CommandType::Dc(mode_cmd));
+            }
         }
         wl_output::Event::Done => {
+            output.done = true;
             let output_name = output.name.as_ref().unwrap().clone();
             let config_outputs = &ctx.state.config.outputs;
             let output_config = match config_outputs.iter().find(|oc| oc.name == output_name) {
@@ -142,14 +173,14 @@ fn wl_output_cb(ctx: EventCtx<State, WlOutput>) {
             };
             let mode = match output_config.mode.as_ref() {
                 Some(m) => match m {
-                    RenderModeConfig::Static => RenderMode::Static,
+                    RenderMode::Static => RenderMode::Static,
                     // initial pos of 0 is fine because the agent picks up workspace changes and enforces reflowing
-                    RenderModeConfig::ScrollVertical => RenderMode::ScrollingVertical(0),
-                    RenderModeConfig::ScrollLateral => RenderMode::ScrollingLateral(0),
+                    RenderMode::ScrollVertical => RenderMode::ScrollVertical,
+                    RenderMode::ScrollLateral => RenderMode::ScrollLateral,
                 },
                 None => RenderMode::Static,
             };
-            let cmd = ThreadCommand::Render(RenderCommand {
+            let cmd = RenderThreadCommand::Render(RenderCommand {
                 output: output_name,
                 image: output_config.image.clone(),
                 mode: mode,

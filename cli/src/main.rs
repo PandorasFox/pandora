@@ -1,4 +1,4 @@
-use pithos::commands::{CommandType, DaemonCommand, LoadImageCommand, StopCommand, ThreadCommand};
+use pithos::commands::{CommandType, DaemonCommand, LoadImageCommand, StopCommand, RenderThreadCommand};
 
 use clap::{arg, Command, ArgMatches};
 
@@ -47,7 +47,7 @@ fn main() {
         // thread-level commands
         Some(("stop", sub_matches)) => {
             let output = extract_str(sub_matches, "output", "output name is required");
-            cmd = Some(CommandType::Tc(ThreadCommand::Stop(StopCommand {
+            cmd = Some(CommandType::Tc(RenderThreadCommand::Stop(StopCommand {
                 output: output,
             })));
         }

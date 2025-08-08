@@ -101,6 +101,12 @@ fn get_outputs(conn: &mut Connection<RenderThreadWaylandState>) -> Vec<(WlOutput
 }
 
 fn wl_output_cb(ctx: EventCtx<RenderThreadWaylandState, WlOutput>) {
+    if ctx.state.outputs.is_none() {
+        // callback during non-setup will be missing .outputs in state as we are not actively collecting them
+        // this most likely means a mode change event. ignore, as we're gonna stop and restart
+        // (because images are scaled down to res and i'm lazy and it's easier to just re-init the whole thing)
+        return;
+    }
     let output = &mut ctx
         .state
         .outputs.as_mut().unwrap()

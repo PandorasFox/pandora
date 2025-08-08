@@ -1,11 +1,13 @@
 use serde::{Serialize, Deserialize};
+
+use crate::config::DaemonConfig;
 // ===== TRAITS AND MISC DATA STRUCTS =====
-#[derive(Serialize, Deserialize, Copy, Clone, Debug)]
+#[derive(knuffel::DecodeScalar, Serialize, Deserialize, Copy, Clone, Debug)]
 pub enum RenderMode {
     // single image
     Static, // will scale up/down to fill
-    ScrollingVertical(u32),
-    ScrollingLateral(u32),
+    ScrollVertical,
+    ScrollLateral,
     // scrolling both directions will be trickier to implement. later problem.
     // hello from later me: honestly it's probably easier than I thought:
     // the agent can enforce positional state well, & correcting-on-the-fly looks better than expected
@@ -36,19 +38,30 @@ pub struct ScrollCommand {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ModeCommand {
+    pub output: String,
+    pub new_width: i32,
+    pub new_height: i32,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum CommandType {
-    Dc(DaemonCommand),
-    Tc(ThreadCommand),
+    // commands for the daemon & other Forever Threads (outputs watcher, compositor agent)
+    Dc(DaemonCommand), 
+    // commands for a specific render thread, dispatched by output name
+    Tc(RenderThreadCommand),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum DaemonCommand {
     LoadImage(LoadImageCommand),
+    ReloadConfig(DaemonConfig),
+    OutputModeChange(ModeCommand),
     Stop,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub enum ThreadCommand {
+pub enum RenderThreadCommand {
     Render(RenderCommand),
     Stop(StopCommand),
     Scroll(ScrollCommand),

@@ -2,17 +2,16 @@ use crate::agents::niri::NiriAgent;
 use crate::agents::outputs::OutputHandler;
 use crate::ipc::InboundCommandHandler;
 use crate::render::{RenderThread};
-use pithos::config::load_config;
 use pithos::misc::get_new_image_dimensions;
 use pithos::wayland::render_helpers::RenderThreadWaylandState;
-use pithos::commands::{CommandType, DaemonCommand, LoadImageCommand, ThreadCommand};
+use pithos::commands::{CommandType, DaemonCommand, LoadImageCommand, RenderThreadCommand};
 use pithos::error::{CommandError, DaemonError};
 use pithos::sockets::write_response_to_client_socket;
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::os::unix::net::{UnixStream};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 use std::sync::mpsc::{channel, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -23,13 +22,13 @@ use wayrs_client::Connection;
 
 // daemon utility struct(s)
 pub struct ThreadHandle {
-    sender: Sender<ThreadCommand>,
+    sender: Sender<RenderThreadCommand>,
     thread: JoinHandle<()>,
 }
 
 impl ThreadHandle {
     fn new(output: String, pandora: Arc<Pandora>) -> ThreadHandle {
-        let (host_sender, thread_receiver) = channel::<ThreadCommand>();
+        let (host_sender, thread_receiver) = channel::<RenderThreadCommand>();
         let conn = Connection::<RenderThreadWaylandState>::connect().unwrap();
 
         let thread = thread::spawn(move || {
@@ -88,26 +87,19 @@ impl Pandora {
         return self;
     }
 
-    pub fn reload_config(&self) {
-        let conf = match load_config() {
-            Ok(conf) => conf,
-            Err(e) => {
-                self.log(format!("could not load/parse config: \n{e:?}"));
-                return;
-            },
-        };
+    fn reload_config(&self, cmd: &DaemonCommand) {
         // if sending to the other perpetual-threads fails i am assuming shit's fucked for other reasons
-        let _ = self.outputs_thread.as_ref().unwrap().notif.send(conf.clone());
-        let _ = self.niri_ag_thread.as_ref().unwrap().notif.send(conf.clone());
+        let _ = self.outputs_thread.as_ref().unwrap().queue.send(cmd.clone());
+        let _ = self.niri_ag_thread.as_ref().unwrap().queue.send(cmd.clone());
     }
 
-    pub fn start(&mut self) {
-        self.outputs_thread.as_ref().unwrap().start();
-        self.niri_ag_thread.as_ref().unwrap().start();
+    pub fn start(&self, weak: Weak<Pandora> ) {
+        self.outputs_thread.as_ref().unwrap().start(weak.clone());
+        self.niri_ag_thread.as_ref().unwrap().start(weak.clone());
         // todo: config_watcher thread
         // main thread control flow loop
         self.log("startup completed; entering into ipc listen loop! :3".to_string());
-        self.cmd_ipc_thread.as_ref().unwrap().start_listen();
+        self.cmd_ipc_thread.as_ref().unwrap().start_listen(weak);
     }
 
     pub fn handle_cmd(&self, cmd: &CommandType){
@@ -121,31 +113,37 @@ impl Pandora {
     fn handle_daemon_command(&self, dc: &DaemonCommand) {
         match dc {
             DaemonCommand::LoadImage(c) => _ = self.load_image(&c.image.clone()),
+            DaemonCommand::ReloadConfig(_) => {
+                self.reload_config(dc);
+            },
             DaemonCommand::Stop => {
                 self.log("goodbye!".to_string());
                 std::process::exit(0);
+            },
+            DaemonCommand::OutputModeChange(_) => {
+                let _ = self.niri_ag_thread.as_ref().unwrap().queue.send(dc.clone());
             }
         };
     }
 
-    fn handle_thread_command(&self, tc: &ThreadCommand) {
+    fn handle_thread_command(&self, tc: &RenderThreadCommand) {
         let output: String;
         let mut can_spawn = false;
         let mut join_after = false;
         let mut image_to_preload: Option<String> = None;
         match tc.clone() {
-            ThreadCommand::Render(c) => {
+            RenderThreadCommand::Render(c) => {
                 output = c.output;
                 can_spawn = true;
                 image_to_preload = Some(c.image);
             }
-            ThreadCommand::Stop(c) => {
+            RenderThreadCommand::Stop(c) => {
                 output = c.output;
                 join_after = true;
             }
-            ThreadCommand::Scroll(c) => {
+            RenderThreadCommand::Scroll(c) => {
                 output = c.output;
-            }
+            },
         };
         if image_to_preload.is_some() {
             self.handle_daemon_command(&DaemonCommand::LoadImage(LoadImageCommand { image:image_to_preload.unwrap() }));
@@ -158,7 +156,7 @@ impl Pandora {
         }
     }
 
-    fn dispatch_thread_command(&self, output: String, c: &ThreadCommand, spawn: bool) -> Result<(), DaemonError> {
+    fn dispatch_thread_command(&self, output: String, c: &RenderThreadCommand, spawn: bool) -> Result<(), DaemonError> {
         // read lock:
         // check if thread exists, dispatch and return if it does.
         {
@@ -185,7 +183,7 @@ impl Pandora {
         
     }
 
-    fn spawn_thread(&self, output: String, c: &ThreadCommand) -> Result<(), DaemonError> {
+    fn spawn_thread(&self, output: String, c: &RenderThreadCommand) -> Result<(), DaemonError> {
         let thread = ThreadHandle::new(output.clone(), Arc::new(self.clone()));
         thread.sender.send(c.clone()).expect("could not send initial command to thread after spawning");
         {

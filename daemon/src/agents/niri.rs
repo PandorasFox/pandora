@@ -1,50 +1,46 @@
 use crate::pandora::Pandora;
-use pithos::commands::{CommandType, ScrollCommand, ThreadCommand};
-use pithos::config::{DaemonConfig, RenderModeConfig};
+use pithos::commands::{CommandType, DaemonCommand, ModeCommand, RenderMode, RenderThreadCommand, ScrollCommand};
+use pithos::config::DaemonConfig;
 use pithos::misc::get_new_image_dimensions;
 
 use std::collections::HashMap;
 use std::ops::Index;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 
 use niri_ipc::{Event, Output, Request, Response, Workspace};
 use niri_ipc::socket::Socket;
 
-
-// todo: 
 pub struct NiriAgent {
-    pandora: Arc<Pandora>,
     config: DaemonConfig,
-    cfg_notif: Arc<Mutex<Receiver<DaemonConfig>>>,
-    pub notif: Sender<DaemonConfig>,
+    cmd_queue: Arc<Mutex<Receiver<DaemonCommand>>>,
+    pub queue: Sender<DaemonCommand>,
 }
 
 impl NiriAgent {
     // constructor will get handed an Arc<Pandora> later. For now, if it's none, we fall back to sending to the @pandora socket.
-    pub fn new(config: DaemonConfig, pandora: Arc<Pandora>) -> Arc<NiriAgent> {
+    pub fn new(config: DaemonConfig) -> Arc<NiriAgent> {
         match Socket::connect() {
             Ok(_) => {
-                let (send, recv) = channel::<DaemonConfig>();
+                let (send, recv) = channel::<DaemonCommand>();
                 Arc::new(NiriAgent {
-                    pandora,
                     config,
-                    cfg_notif: Arc::new(Mutex::new(recv)),
-                    notif: send
+                    cmd_queue: Arc::new(Mutex::new(recv)),
+                    queue: send
                 })
             },
             Err(e) => panic!("{e:?}"),
         }
     }
 
-    pub fn start(&self) {
-        let pandora = self.pandora.clone();
+    pub fn start(&self, weak: Weak<Pandora>) {
+        let pandora = weak.upgrade().take().unwrap();
         let config = self.config.clone();
-        let cfg_notif = self.cfg_notif.clone();
+        let cmd_queue = self.cmd_queue.clone();
         match thread::Builder::new().name("niri agent".to_string())
             .spawn(move || {
-                run(config, pandora, cfg_notif);
+                run(config, pandora, cmd_queue);
                 eprintln!("niri agent thread exiting (is session exiting?)");
             }
         ) {
@@ -69,16 +65,12 @@ fn get_niri_state(socket: &mut Socket) -> (HashMap<String, Output>, Vec<Workspac
     return (outputs_response, workspaces_response);
 }
 
-fn run(config: DaemonConfig, pandora: Arc<Pandora>, cfg_notif: Arc<Mutex<Receiver<DaemonConfig>>>) {
+fn run(config: DaemonConfig, pandora: Arc<Pandora>, cmd_queue: Arc<Mutex<Receiver<DaemonCommand>>>) {
     let mut socket = Socket::connect().unwrap();
     let mut processor = NiriProcessor::default();
     processor.config = config;
 
-    let (outputs_response, workspaces_response) = get_niri_state(&mut socket);
-    
-    for cmd in processor.init_state(pandora.clone(), &outputs_response, &workspaces_response) {
-        let _ = pandora.handle_cmd(&cmd);
-    }
+    processor.init_state(pandora.clone(), &mut socket);
 
     let reply = socket.send(Request::EventStream).unwrap();
     if matches!(reply, Ok(Response::Handled)) {
@@ -87,12 +79,21 @@ fn run(config: DaemonConfig, pandora: Arc<Pandora>, cfg_notif: Arc<Mutex<Receive
             for cmd in processor.process(event) {
                 let _ = pandora.handle_cmd(&cmd);
             }
-            match cfg_notif.lock() {
+            match cmd_queue.lock() {
                 Ok(channel) => {
                     match channel.try_recv() {
-                        Ok(conf) => {
-                            processor.config = conf
-                            // TODO: come back later and figure out what the correct post-cfg-reload action is
+                        Ok(cmd) => {
+                            match cmd {
+                                DaemonCommand::OutputModeChange(new_mode) => {
+                                    // update state => reflow output
+                                    processor.update_mode(new_mode);
+                                    for cmd in processor.reseat_scroll_positions() {
+                                        pandora.handle_cmd(&cmd);
+                                    }
+                                },
+                                DaemonCommand::ReloadConfig(config) => processor.config = config,
+                                DaemonCommand::LoadImage(_) | DaemonCommand::Stop => (),
+                            }
                         },
                         Err(_) => (), // assuming this is just "no config sent over the wire"
                     }
@@ -107,13 +108,13 @@ fn run(config: DaemonConfig, pandora: Arc<Pandora>, cfg_notif: Arc<Mutex<Receive
 
 #[derive(Debug)]
 struct OutputState {
-    _width: i32,
+    width: i32,
     height: i32,
     // refresh: i32,
     _current_image: String,
     _img_width: i32,
     img_height: i32,
-    mode: Option<RenderModeConfig>,
+    mode: Option<RenderMode>,
     max_workspace_idx: u8, // idx, name
 }
 
@@ -125,6 +126,16 @@ struct NiriProcessor {
 }
 
 impl NiriProcessor {
+    fn update_mode(&mut self, new_mode: ModeCommand) {
+        self.outputs.iter_mut()
+        .find(|o| o.0 == new_mode.output)
+        .and_then(|o| -> Option<_> {
+            o.1.width = new_mode.new_width;
+            o.1.height = new_mode.new_height;
+            Some(o)
+        });   
+    }
+
     fn update_workspaces(&mut self, workspaces: &Vec<Workspace>) {
         for workspace in workspaces {
             if workspace.output.is_some() {
@@ -140,7 +151,8 @@ impl NiriProcessor {
         self.workspaces = workspaces.clone();
     }
 
-    fn init_state(&mut self, pandora: Arc<Pandora>, outputs: &HashMap<String, Output>, workspaces: &Vec<Workspace>) -> Vec<CommandType> {
+    fn init_state(&mut self, pandora: Arc<Pandora>, niri_socket: &mut Socket) {
+        let (outputs, workspaces) = get_niri_state(niri_socket);
         for (output_name, output) in outputs {
             let output_config = match self.config.outputs.iter().find(|oc| oc.name == *output_name) {
                 Some(c) => c,
@@ -154,9 +166,9 @@ impl NiriProcessor {
                 let (scale_width, scale_height) = match &output_config.mode {
                     None => (Some(output_width), Some(output_height)),
                     Some(mode) => match mode {
-                        RenderModeConfig::Static => (Some(output_width), Some(output_height)),
-                        RenderModeConfig::ScrollVertical => (Some(output_width), None),
-                        RenderModeConfig::ScrollLateral => (None, Some(output_height))
+                        RenderMode::Static => (Some(output_width), Some(output_height)),
+                        RenderMode::ScrollVertical => (Some(output_width), None),
+                        RenderMode::ScrollLateral => (None, Some(output_height))
                     },
                 };
 
@@ -172,7 +184,7 @@ impl NiriProcessor {
                 let (scaled_width, scaled_height) = get_new_image_dimensions(image_width, image_height, scale_width, scale_height);
 
                 let output_state = OutputState {
-                    _width: mode.width as i32,
+                    width: mode.width as i32,
                     height: mode.height as i32,
                     _current_image: img_path,
                     _img_width: scaled_width as i32,
@@ -184,8 +196,9 @@ impl NiriProcessor {
             }
         }
         self.update_workspaces(&workspaces);
-        return self.reseat_scroll_positions();
-
+        for cmd in self.reseat_scroll_positions() {
+            pandora.handle_cmd(&cmd);
+        }
     }
 
     fn reseat_scroll_positions(&self) -> Vec<CommandType> {
@@ -237,7 +250,7 @@ impl NiriProcessor {
         match &output.mode {
             None => return None,
             Some(mode) => match mode {
-                RenderModeConfig::ScrollVertical => {
+                RenderMode::ScrollVertical => {
                     let last_scroll_pos = output.img_height - output.height;
                     let first_scroll_pos = 0;
                     // idx 1: 0, .... idx N: last_scroll_pos
@@ -245,7 +258,7 @@ impl NiriProcessor {
                     // scroll dist should be min(that, output_height) so that if we have too few workspaces we scroll in a continuous manner
                     let scroll_per_workspace = output.height.min((last_scroll_pos - first_scroll_pos) / (output.max_workspace_idx - 1) as i32);
                     let pos = scroll_per_workspace as u32 * (curr_idx - 1) as u32;
-                    let cmd = ThreadCommand::Scroll(ScrollCommand {
+                    let cmd = RenderThreadCommand::Scroll(ScrollCommand {
                         output: output_name,
                         position: pos,
                     });

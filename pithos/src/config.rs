@@ -1,36 +1,31 @@
 use std::{env, fs, path::Path};
 
-#[derive(Clone, Debug, knuffel::Decode)]
+use crate::commands::RenderMode;
+
+#[derive(Clone, Debug, knuffel::Decode, serde::Serialize, serde::Deserialize)]
 pub enum ConfigNode {
     Output(OutputConfig),
 }
 
-#[derive(Clone, Debug, knuffel::DecodeScalar)]
+#[derive(Clone, Debug, knuffel::DecodeScalar, serde::Serialize, serde::Deserialize)]
 pub enum ConfigTriggers {
     Locked,
     WorkspaceName,
 }
 
-#[derive(Clone, Debug, knuffel::DecodeScalar)]
-pub enum RenderModeConfig {
-    Static,
-    ScrollVertical,
-    ScrollLateral,
-}
-
-#[derive(Clone, Debug, knuffel::DecodeScalar)]
+#[derive(Clone, Debug, knuffel::DecodeScalar, serde::Serialize, serde::Deserialize)]
 pub enum LockRenderMode {
     Static,
 }
 
-#[derive(Clone, Debug, Default, knuffel::Decode)]
+#[derive(Clone, Debug, Default, knuffel::Decode, serde::Serialize, serde::Deserialize)]
 pub struct OutputConfig {
     #[knuffel(argument)]
     pub name: String,
     #[knuffel(child, unwrap(argument))]
     pub image: String,
     #[knuffel(child, unwrap(argument))]
-    pub mode: Option<RenderModeConfig>,
+    pub mode: Option<RenderMode>,
     // sub-items
     #[knuffel(child)]
     pub lockscreen: Option<LockConfig>,
@@ -38,7 +33,7 @@ pub struct OutputConfig {
     pub workspaces: Option<Vec<WorkspaceConfig>>,
 }
 
-#[derive(Clone, Debug, knuffel::Decode)]
+#[derive(Clone, Debug, knuffel::Decode, serde::Serialize, serde::Deserialize)]
 pub struct LockConfig {
     #[knuffel(child, unwrap(argument))]
     pub image: String,
@@ -51,19 +46,19 @@ pub struct LockConfig {
 ///     mode static
 ///     trigger "workspace name"
 /// }
-#[derive(Clone, Debug, knuffel::Decode)]
+#[derive(Clone, Debug, knuffel::Decode, serde::Serialize, serde::Deserialize)]
 pub struct WorkspaceConfig {
     #[knuffel(argument)]
     pub name: String,
     #[knuffel(child, unwrap(argument))]
     pub image: String,
     #[knuffel(child, unwrap(argument))]
-    pub mode: Option<RenderModeConfig>,
+    pub mode: Option<RenderMode>,
     #[knuffel(child, unwrap(arguments))]
     pub trigger: Vec<ConfigTriggers>,
 }
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
 pub struct DaemonConfig {
     pub outputs: Vec<OutputConfig>,
     // lockscreen: LockscreenConfig,

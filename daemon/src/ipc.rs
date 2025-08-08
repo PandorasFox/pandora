@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::thread;
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixListener};
@@ -8,11 +8,10 @@ use crate::pandora::Pandora;
 #[derive(Clone)]
 pub struct InboundCommandHandler {
     listener: Arc<UnixListener>,
-    pandora: Arc<Pandora>,
 }
 
 impl InboundCommandHandler {
-    pub fn new(pandora: Arc<Pandora>) -> Arc<InboundCommandHandler> {
+    pub fn new() -> Arc<InboundCommandHandler> {
         let listen_addr = SocketAddr::from_abstract_name("pandora").expect(
             "could not construct linux named-socket address (sorry bsd?)");
         let socket = UnixListener::bind_addr(&listen_addr).expect(
@@ -20,15 +19,14 @@ impl InboundCommandHandler {
 
         return Arc::new(InboundCommandHandler {
             listener: Arc::new(socket),
-            pandora: pandora,
         });
     }
 
-    pub fn start_listen(&self) {
+    pub fn start_listen(&self, pandora: Weak<Pandora>) {
         for connection in self.listener.incoming() {
-            let pandora = self.pandora.as_ref().clone();
+            let p = pandora.upgrade().take().unwrap();
             thread::spawn(move || 
-                pandora.process_ipc(&connection.expect(
+                p.process_ipc(&connection.expect(
                     "could not accept incoming client socket/connection")));
         }
     }

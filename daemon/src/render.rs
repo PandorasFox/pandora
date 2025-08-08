@@ -1,5 +1,5 @@
 use pithos::anims::spring::{Spring, SpringParams};
-use pithos::commands::{RenderCommand, RenderMode, ScrollCommand, ThreadCommand};
+use pithos::commands::{RenderCommand, RenderMode, ScrollCommand, RenderThreadCommand};
 use pithos::error::DaemonError;
 use pithos::wayland::render_helpers::{get_wloutput_by_name, OutputMode, RenderState, RenderThreadWaylandState, ScrollState};
 
@@ -45,7 +45,7 @@ pub struct RenderThreadWaylandGlobals {
 
 pub struct RenderThread {
     name: String,
-    receiver: Receiver<ThreadCommand>,
+    receiver: Receiver<RenderThreadCommand>,
     pandora: Arc<Pandora>,
     conn: Connection<RenderThreadWaylandState>,
     globals: Option<RenderThreadWaylandGlobals>,
@@ -92,7 +92,7 @@ fn initialize_wayland_handles(conn: &mut Connection<RenderThreadWaylandState>, o
 }
 
 impl RenderThread {
-    pub fn new(output: String, recv: Receiver<ThreadCommand>, pandora: Arc<Pandora>, conn: Connection<RenderThreadWaylandState>) -> RenderThread {
+    pub fn new(output: String, recv: Receiver<RenderThreadCommand>, pandora: Arc<Pandora>, conn: Connection<RenderThreadWaylandState>) -> RenderThread {
         return RenderThread {
             name: output,
             receiver: recv,
@@ -110,7 +110,7 @@ impl RenderThread {
     pub fn start(&mut self) {
         let cmd = self.receiver.recv().expect("thread exploded while waiting on first command recv");
         match cmd {
-            ThreadCommand::Render(c) => {
+            RenderThreadCommand::Render(c) => {
                 self.render(&c).expect("Error initializing render thread");
             }
             _ => {
@@ -171,8 +171,8 @@ impl RenderThread {
         // easier to reason about
         let scale_to = match cmd.mode {
             RenderMode::Static => Some((Some(output_width), Some(output_height))),
-            RenderMode::ScrollingVertical(_) => Some((Some(output_width), None)),
-            RenderMode::ScrollingLateral(_) => Some((None, Some(output_height)))
+            RenderMode::ScrollVertical => Some((Some(output_width), None)),
+            RenderMode::ScrollLateral => Some((None, Some(output_height)))
         };
 
         let (img_width, img_height) = self.pandora.read_img_to_file(&cmd.image, &file, scale_to)?;
@@ -205,32 +205,32 @@ impl RenderThread {
                 );
                 None
             }
-            RenderMode::ScrollingVertical(offset) => {
+            RenderMode::ScrollVertical => {
                 Some(ScrollState {
-                    start_pos: offset,
-                    current_pos: offset,
-                    end_pos: offset,
+                    start_pos: 0,
+                    current_pos: 0,
+                    end_pos: 0,
                     anim_start: Instant::now(),
                     anim_duration: Duration::ZERO,
                     anim: Spring {
-                        from: offset as f64,
-                        to: offset as f64,
+                        from: 0 as f64,
+                        to: 0 as f64,
                         initial_velocity: 0.0,
                         params: SpringParams::default(),
                     },
                     _frame_count: 0,
                 })
             },
-            RenderMode::ScrollingLateral(offset) => {
+            RenderMode::ScrollLateral => {
                 Some(ScrollState {
-                    start_pos: offset,
-                    current_pos: offset,
-                    end_pos: offset,
+                    start_pos: 0,
+                    current_pos: 0,
+                    end_pos: 0,
                     anim_start: Instant::now(),
                     anim_duration: Duration::ZERO,
                     anim: Spring {
-                        from: offset as f64,
-                        to: offset as f64,
+                        from: 0 as f64,
+                        to: 0 as f64,
                         initial_velocity: 0.0,
                         params: SpringParams::default(),
                     },
@@ -300,17 +300,17 @@ impl RenderThread {
         }
     }
 
-    fn handle_cmd(&mut self, cmd: &ThreadCommand) {
+    fn handle_cmd(&mut self, cmd: &RenderThreadCommand) {
         match cmd {
-            ThreadCommand::Render(c) => {
+            RenderThreadCommand::Render(c) => {
                 self.render(c).expect("error handling render command");
             }
-            ThreadCommand::Stop(_) => {
+            RenderThreadCommand::Stop(_) => {
                 self.end();
             }
-            ThreadCommand::Scroll(c) => {
+            RenderThreadCommand::Scroll(c) => {
                 self.scroll(c);
-            }
+            },
         }
     }
 
@@ -329,11 +329,11 @@ impl RenderThread {
         // validate command/position before we commit to scrolling
         let valid = match render_state.mode {
             RenderMode::Static => false, // nothing to do here!
-            RenderMode::ScrollingVertical(_) => {
+            RenderMode::ScrollVertical => {
                 let end_bound = render_state.crop_height + cmd.position;
                 end_bound <= render_state.orig_height
             },
-            RenderMode::ScrollingLateral(_) => {
+            RenderMode::ScrollLateral => {
                 let end_bound = render_state.crop_width + cmd.position;
                 end_bound <= render_state.orig_width
             }
@@ -414,7 +414,7 @@ fn do_scroll_step(conn: &mut Connection<RenderThreadWaylandState>,
         RenderMode::Static => {
             // THIS SHOULD BE A NOP / INVALID COMMAND IDK
         }
-        RenderMode::ScrollingVertical(_) => {
+        RenderMode::ScrollVertical => {
             viewport.set_destination(conn,
                 output_info.width, output_info.height,
             );
@@ -423,7 +423,7 @@ fn do_scroll_step(conn: &mut Connection<RenderThreadWaylandState>,
                 render_state.crop_width.into(), render_state.crop_height.into(),
             );
         },
-        RenderMode::ScrollingLateral(_) => {
+        RenderMode::ScrollLateral => {
             viewport.set_destination(conn,
                 output_info.width, output_info.height,
             );
