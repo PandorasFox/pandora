@@ -1,10 +1,29 @@
-use std::{env, fs, path::{Path, PathBuf}, thread, time::Duration};
+use std::{cmp::Ordering, env, fs, path::{Path, PathBuf}, thread, time::Duration};
 
 use super::commands::RenderMode;
+
+#[derive(Copy, Clone, Debug, Default)]
+#[derive(Eq, Ord, PartialEq, PartialOrd)]
+#[derive(knuffel::DecodeScalar, serde::Serialize, serde::Deserialize, clap::Parser, clap::ValueEnum)]
+pub enum LogLevel {
+    #[default] DEFAULT = 0,
+    VERBOSE = 1,
+    DEBUG = 2,
+}
+
+impl LogLevel {
+    pub fn check(&self, other: &LogLevel) -> bool {
+        if self.cmp(other) == Ordering::Equal { // easy case: accept messages of same threshold
+            return true;
+        }
+        return self.cmp(other) == Ordering::Greater; // if threshold is greater than incoming log level, allow
+    }
+}
 
 #[derive(Clone, Debug, knuffel::Decode, serde::Serialize, serde::Deserialize)]
 pub enum ConfigNode {
     Output(OutputConfig),
+    Logging(#[knuffel(argument)] LogLevel),
 }
 
 #[derive(Clone, Debug, knuffel::DecodeScalar, serde::Serialize, serde::Deserialize)]
@@ -62,6 +81,7 @@ pub struct WorkspaceConfig {
 pub struct DaemonConfig {
     pub outputs: Vec<OutputConfig>,
     // lockscreen: LockscreenConfig,
+    pub log_level: LogLevel,
 }
 
 pub fn get_config_dir() -> PathBuf {
@@ -106,7 +126,7 @@ pub fn load_config() -> miette::Result<DaemonConfig> {
 
     let config_nodes = knuffel::parse::<Vec<ConfigNode>>(config_path.to_str().unwrap(), config_file_contents.clone().unwrap().as_str())?;
     
-    let mut config = DaemonConfig { outputs: Vec::new() };
+    let mut config = DaemonConfig { outputs: Vec::new(), log_level: LogLevel::DEFAULT };
     for node in config_nodes {
         match node {
             ConfigNode::Output(mut n) => {
@@ -120,7 +140,8 @@ pub fn load_config() -> miette::Result<DaemonConfig> {
                     n.lockscreen.as_mut().unwrap().image = shellexpand::full(&n.lockscreen.as_ref().unwrap().image).unwrap().to_string();
                 }
                 config.outputs.push(n)
-            }
+            },
+            ConfigNode::Logging(level) => config.log_level = level,
         }
     }
 

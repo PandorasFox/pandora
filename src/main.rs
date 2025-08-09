@@ -5,10 +5,18 @@ use ::pandora::pithos::config::load_config;
 use std::sync::Arc;
 
 fn main() -> miette::Result<()> {
-    let verbosity = cli::cli();
+    let cli_verbosity = cli::cli();
     let config = load_config()?;
+
+    let verbosity = match cli_verbosity {
+        Some(level) => level,
+        None => config.log_level,
+    };
+
     // initialize daemon & ipc handlers, and glue them together.
     let mut pandora = crate::pandora::Pandora::new(config.clone(), verbosity);
+    // we initialize pandora mutably so that logging can be started
+    //  => other threads have The Logging Abstraction available for the entirety of their runtime
     let ipc = crate::threads::ipc::InboundCommandHandler::new();
     let outputs = crate::threads::outputs::OutputHandler::new(config.clone());
     let niri = crate::threads::niri::NiriAgent::new(config.clone());
@@ -20,8 +28,7 @@ fn main() -> miette::Result<()> {
         niri.clone(),
         config_watcher.clone(),
     );
+
     // give the subthreads a weak pointer now that we're done mutating pandora into some sort of daemon
-    let weak = Arc::downgrade(&pandora);
-    pandora.start(weak);
-    Ok(())
+    Ok(pandora.start(Arc::downgrade(&pandora)))
 }

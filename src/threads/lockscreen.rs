@@ -1,7 +1,5 @@
-use pandora::pithos::config::DaemonConfig;
+use pandora::pithos::config::{DaemonConfig, LogLevel};
 use std::{sync::{mpsc::Sender, Arc}, thread};
-
-use crate::threads::logger::LogLevel;
 
 pub fn lock(log: Arc<Sender<(LogLevel, String)>>, config: DaemonConfig) { // the one public interface
     LockscreenThread::start(log, config);

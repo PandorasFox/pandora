@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use ::pandora::pithos::config::LogLevel;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
@@ -44,22 +44,5 @@ impl LogThread {
                 }
             }
         }
-    }
-}
-
-#[derive(Copy, Clone, Debug)]
-#[derive(Eq, Ord, PartialEq, PartialOrd)]
-pub enum LogLevel {
-    DEFAULT = 0,
-    VERBOSE = 1,
-    DEBUG = 2,
-}
-
-impl LogLevel {
-    pub fn check(&self, other: &LogLevel) -> bool {
-        if self.cmp(other) == Ordering::Equal { // easy case: accept messages of same threshold
-            return true;
-        }
-        return self.cmp(other) == Ordering::Greater; // if threshold is greater than incoming log level, allow
     }
 }

@@ -26,6 +26,7 @@ pub struct RenderCommand {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(clap::Args)]
 pub struct StopCommand {
     pub output: String,
 }
