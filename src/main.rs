@@ -1,10 +1,11 @@
+mod cli;
 mod pandora;
 mod threads;
 use ::pandora::pithos::config::load_config;
 use std::sync::Arc;
 
 fn main() -> miette::Result<()> {
-    // TODO factor cli() into here, have it do ipc & exit if necessary
+    cli::cli();
     let config = load_config()?;
     // initialize daemon & ipc handlers, and glue them together.
     let mut pandora = crate::pandora::Pandora::new();
