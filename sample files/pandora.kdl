@@ -1,5 +1,5 @@
-// sample config to get you started
-// should go in ~/.config/pandora.kdl (or $XDG_CONFIG_HOME/pandora.kdl)
+// sample config to get you started :3
+// should go in ~/.config/pandora/pandora.kdl (or $XDG_CONFIG_HOME/pandora/pandora.kdl)
 output "DP-1" {
     image "~/pictures/wallpapers/portrait.png"
     mode "scroll-vertical"
@@ -20,3 +20,5 @@ output "DP-2" {
     image "~/pictures/wallpapers/another wallpaper.png"
     mode "static"
 }
+
+// logging "default"
