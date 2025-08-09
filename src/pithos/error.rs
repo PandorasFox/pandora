@@ -16,6 +16,7 @@ pub enum DaemonError {
     IoError(std::io::Error),
     ImageError(image::ImageError),
     CommandError(CommandError),
+    LogicalError, // general encapsulation of "invalid operation, maybe due to bad config"
     PoisonError, // typedef annoying and doesn't really add much. "a mutex got fucked" is all that really matters
 }
 

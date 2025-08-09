@@ -29,7 +29,7 @@ pub fn get_new_image_dimensions(orig_width: u32, orig_height: u32, output_width:
             // if image is 10000x10000 and display is 2000x1000, this gives max(0.2, 0.1) => 0.2 => 2000x2000
             // should write tests for this all though
             f64::max(
-                 canvas_width as f64 / orig_width as f64,
+                canvas_width as f64 / orig_width as f64,
                 canvas_height as f64 / orig_height as f64,
             )
         },

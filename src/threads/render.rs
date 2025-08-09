@@ -176,6 +176,10 @@ impl RenderThread {
         };
 
         let (img_width, img_height) = self.pandora.read_img_to_file(&cmd.image, &file, scale_to)?;
+        if img_width < output_width || img_height < output_height {
+            self.log(format!("image scaled to {img_width} x {img_height}, but output is {output_width} by {output_height}.\n   Try static mode for this image, as it's maybe insufficient for the desired mode :("));
+            return Err(DaemonError::LogicalError);
+        }
         self.log(format!("file loaded and scaled to {img_width} x {img_height}"));
         let bytes_per_row: i32 = img_width as i32 * 4;
         let total_bytes: i32 = bytes_per_row * img_height as i32;
