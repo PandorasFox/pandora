@@ -101,6 +101,7 @@ fn run(config: DaemonConfig, pandora: Arc<Pandora>, cmd_queue: Arc<Mutex<Receive
                                     }
 
                                 }
+                                DaemonCommand::Lock => (), // i think ? 
                                 DaemonCommand::LoadImage(_) | DaemonCommand::Stop => (),
                             }
                         },

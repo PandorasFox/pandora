@@ -55,6 +55,7 @@ pub enum CommandType {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum DaemonCommand {
     LoadImage(LoadImageCommand),
+    Lock,
     ReloadConfig(DaemonConfig),
     OutputModeChange(ModeCommand),
     Stop,

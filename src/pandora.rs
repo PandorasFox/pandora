@@ -127,10 +127,15 @@ impl Pandora {
             },
             DaemonCommand::OutputModeChange(_) => {
                 let _ = self.niri_ag_thread.as_ref().unwrap().queue.send(dc.clone());
-            }
+            },
+            DaemonCommand::Lock => self.lock(),
         };
     }
 
+    fn lock(&self) {
+        todo!();
+    }
+    
     fn handle_thread_command(&self, tc: &RenderThreadCommand) {
         let output: String;
         let mut can_spawn = false;
