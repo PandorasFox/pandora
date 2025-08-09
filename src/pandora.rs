@@ -1,8 +1,10 @@
 use crate::threads::config::ConfigWatcher;
+use crate::threads::logger::{LogLevel, LogThread};
 use crate::threads::niri::NiriAgent;
 use crate::threads::outputs::OutputHandler;
 use crate::threads::ipc::InboundCommandHandler;
 use crate::threads::render::{RenderThread};
+use pandora::pithos::config::DaemonConfig;
 use ::pandora::pithos::misc::get_new_image_dimensions;
 use ::pandora::pithos::commands::{CommandType, DaemonCommand, LoadImageCommand, RenderThreadCommand};
 use ::pandora::pithos::error::{CommandError, DaemonError};
@@ -27,6 +29,7 @@ pub struct ThreadHandle {
     thread: JoinHandle<()>,
 }
 
+// move this to render.rs lol
 impl ThreadHandle {
     fn new(output: String, pandora: Arc<Pandora>) -> ThreadHandle {
         let (host_sender, thread_receiver) = channel::<RenderThreadCommand>();
@@ -50,6 +53,7 @@ impl ThreadHandle {
 
 #[derive(Clone)]
 pub struct Pandora {
+    logger: Arc<LogThread>,
     cmd_ipc_thread: Option<Arc<InboundCommandHandler>>,
     outputs_thread: Option<Arc<OutputHandler>>,
     niri_ag_thread: Option<Arc<NiriAgent>>,
@@ -60,23 +64,31 @@ pub struct Pandora {
     // useful central cache of loaded images for lockscreen etc
     images: Arc<RwLock<HashMap<String, RgbaImage>>>,
     // agent: Arc<AgentHandler>,
+    config: Arc<RwLock<DaemonConfig>>,
 }
 
 impl Pandora {
-    pub fn log(&self, s: String) {
-        // need to evaluate logging libraries & integrate clap/ipc back into main binary
-        println!("> pandora: {s}");
-    }
-
-    pub fn new() -> Arc<Pandora> {
+    pub fn new(config: DaemonConfig, verbosity: LogLevel) -> Arc<Pandora> {
         return Arc::new(Pandora {
+            logger: LogThread::new(verbosity),
             cmd_ipc_thread: None,
             outputs_thread: None,
             niri_ag_thread: None,
             configw_thread: None,
             threads: Arc::new(RwLock::new(HashMap::<String, ThreadHandle>::new())),
             images: Arc::new(RwLock::new(HashMap::<String, RgbaImage>::new())),
+            config: Arc::new(RwLock::new(config)),
         });
+    }
+
+    pub fn log(&self, name: &str, msg: String) {
+        self.logger.log(LogLevel::DEFAULT, name, msg);
+    }
+    pub fn debug(&self, name: &str, msg: String) {
+        self.logger.log(LogLevel::DEBUG, name, msg);
+    }
+    pub fn verbose(&self, name: &str, msg: String) {
+        self.logger.log(LogLevel::VERBOSE, name, msg);
     }
 
     pub fn bind_threads(&mut self,
@@ -93,6 +105,16 @@ impl Pandora {
     }
 
     fn reload_config(&self, cmd: &DaemonCommand) {
+        {
+            match self.config.write() {
+                Ok(_conf) => {
+                    // daemon should cache the current config so the lockscreen has current config cloned when it spawns
+                }
+                Err(_e) => {
+
+                }
+            }
+        }
         // if sending to the other perpetual-threads fails i am assuming shit's fucked for other reasons
         let _ = self.outputs_thread.as_ref().unwrap().queue.send(cmd.clone());
         let _ = self.niri_ag_thread.as_ref().unwrap().queue.send(cmd.clone());
@@ -103,7 +125,7 @@ impl Pandora {
         self.niri_ag_thread.as_ref().unwrap().start(weak.clone());
         self.configw_thread.as_ref().unwrap().start(weak.clone());
         // main thread control flow loop
-        self.log("startup completed; entering into ipc listen loop! :3".to_string());
+        self.log("pandora", "startup completed; entering into ipc listen loop! :3".to_string());
         self.cmd_ipc_thread.as_ref().unwrap().start(weak);
     }
 
@@ -122,7 +144,7 @@ impl Pandora {
                 self.reload_config(dc);
             },
             DaemonCommand::Stop => {
-                self.log("goodbye!".to_string());
+                self.log("pandora","goodbye!".to_string());
                 std::process::exit(0);
             },
             DaemonCommand::OutputModeChange(_) => {
@@ -133,7 +155,13 @@ impl Pandora {
     }
 
     fn lock(&self) {
-        todo!();
+        {
+            match self.config.read() {
+                Ok(conf) => crate::threads::lockscreen::lock(self.logger.inbox.clone(), conf.clone()),
+                Err(_) => self.log("pandora", "locking screen failed: could not acquire config read-lock".to_string()),
+            }
+        }
+        
     }
     
     fn handle_thread_command(&self, tc: &RenderThreadCommand) {
@@ -210,11 +238,11 @@ impl Pandora {
             match images_lock {
                 Ok(mut images_table) => {
                     if images_table.contains_key(&path.clone()) {
-                        self.log(format!("file {} already loaded", path.clone()));
+                        self.verbose("pandora", format!("file {} already loaded", path.clone()));
                         return Ok(());
                     }
                     images_table.insert(path.clone(), img.into_rgba8());
-                    self.log(format!("file {} loaded", path.clone()));
+                    self.log("pandora", format!("file {} loaded", path.clone()));
                     return Ok(());
                 }
                 Err(e) => panic!("{e:?}"),
@@ -287,10 +315,10 @@ impl Pandora {
                     } else {
                         // can happen when a stop is issued -> daemon gets here before the thread stops
                         // .... but also could happen on a genuine wedge, so we don't want to lie about that.
-                        self.log(format!("could not join to thread for {output} (wedged?)"));
+                        self.log("pandora", format!("could not join to thread for {output} (wedged?)"));
                     }
                 },
-                None => self.log(format!("named thread for {output} already stopped or doesn't exist")),
+                None => self.log("pandora", format!("named thread for {output} already stopped or doesn't exist")),
             }
         }
     }

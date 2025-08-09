@@ -40,8 +40,8 @@ impl NiriAgent {
         let cmd_queue = self.cmd_queue.clone();
         match thread::Builder::new().name("niri agent".to_string())
             .spawn(move || {
-                run(config, pandora, cmd_queue);
-                eprintln!("niri agent thread exiting (is session exiting?)");
+                run(config, pandora.clone(), cmd_queue);
+                pandora.log("niri-agent", "thread exiting (is session exiting?)".to_string());
             }
         ) {
             Ok(_) => (), // [tf2 medic voice] i will live forever!
@@ -76,9 +76,7 @@ fn run(config: DaemonConfig, pandora: Arc<Pandora>, cmd_queue: Arc<Mutex<Receive
     if matches!(reply, Ok(Response::Handled)) {
         let mut read_event = socket.read_events();
         while let Ok(event) = read_event() {
-            for cmd in processor.process(event) {
-                let _ = pandora.handle_cmd(&cmd);
-            }
+            processor.process(pandora.clone(), event);
             match cmd_queue.lock() {
                 Ok(channel) => {
                     match channel.try_recv() {
@@ -87,19 +85,12 @@ fn run(config: DaemonConfig, pandora: Arc<Pandora>, cmd_queue: Arc<Mutex<Receive
                                 DaemonCommand::OutputModeChange(new_mode) => {
                                     // update state => reflow output
                                     processor.update_mode(new_mode);
-                                    for cmd in processor.reseat_scroll_positions() {
-                                        pandora.handle_cmd(&cmd);
-                                    }
+                                    processor.reseat_scroll_positions(pandora.clone());
                                 },
                                 DaemonCommand::ReloadConfig(config) => {
-                                    let mut cmds = processor.update_config(config, pandora.clone());
-                                    if cmds.len() != 0 {
-                                        cmds.append(&mut processor.reseat_scroll_positions());
+                                    if processor.update_config(config, pandora.clone()) {
+                                        processor.reseat_scroll_positions(pandora.clone());
                                     }
-                                    for cmd in cmds {
-                                        pandora.handle_cmd(&cmd);
-                                    }
-
                                 }
                                 DaemonCommand::Lock => (), // i think ? 
                                 DaemonCommand::LoadImage(_) | DaemonCommand::Stop => (),
@@ -109,7 +100,7 @@ fn run(config: DaemonConfig, pandora: Arc<Pandora>, cmd_queue: Arc<Mutex<Receive
                     }
                 },
                 Err(e) => {
-                    eprintln!("> niri-agent: error acquiring channel lock: {e:?}");
+                    pandora.log("niri-agent", format!("error acquiring channel lock: {e:?}"));
                 }
             }
         }
@@ -136,9 +127,9 @@ struct NiriProcessor {
 }
 
 impl NiriProcessor {
-    fn update_config(&mut self, new_config: DaemonConfig, pandora: Arc<Pandora>) -> Vec<CommandType> {
+    fn update_config(&mut self, new_config: DaemonConfig, pandora: Arc<Pandora>) -> bool {
         // this kinda sucks and i should really really rewrite it into an "update state" or something
-        let mut cmds = Vec::<CommandType>::new();
+        let mut mutated = false;
         for new_output_conf in &new_config.outputs {
             let new_mode = new_output_conf.mode.unwrap_or(RenderMode::Static);
             let (output_name, state) = match self.outputs.iter_mut()
@@ -149,10 +140,13 @@ impl NiriProcessor {
             // 🤮 im so sorry im so sorry 🤮
             // this is without a doubt some of the grossest code ive written, all in the name of relatively seamless
             // live config reloading for the end users...... they know not nor care not about my sins, probably
+            // next time any of this code needs any touching it *shall* be refactored into an UpdateState internal func
+            // that the other functions leverage sanely
             if state._current_image != new_output_conf.image || state.mode.unwrap_or(RenderMode::Static) != new_mode {
                 // really hacky state updating in place. brittle. YEEHAW
                 if pandora.load_image(&new_output_conf.image.clone()).is_err() {
-                    log(format!("failed to load {} for {} (does it exist?)", new_output_conf.image.clone(), new_output_conf.name.clone()));
+                    pandora.log("niri-agent", format!("failed to load {} for {} (does it exist?)", new_output_conf.image.clone(), new_output_conf.name.clone()));
+                    continue; // !
                 }
                 let (image_width, image_height) = match pandora.get_image_dimensions(new_output_conf.image.clone()) {
                     Ok((w, h)) => (w, h),
@@ -176,11 +170,12 @@ impl NiriProcessor {
                     image: new_output_conf.image.clone(),
                     mode: new_mode,
                 };
-                cmds.push(CommandType::Tc(RenderThreadCommand::Render(cmd)));
+                pandora.handle_cmd(&CommandType::Tc(RenderThreadCommand::Render(cmd)));
+                mutated = true;
             }  
         }
         self.config = new_config;
-        return cmds;
+        return mutated;
     }
 
     fn update_mode(&mut self, new_mode: ModeCommand) {
@@ -253,65 +248,51 @@ impl NiriProcessor {
             }
         }
         self.update_workspaces(&workspaces);
-        for cmd in self.reseat_scroll_positions() {
-            pandora.handle_cmd(&cmd);
-        }
+        self.reseat_scroll_positions(pandora.clone());
     }
 
-    fn reseat_scroll_positions(&self) -> Vec<CommandType> {
-        let mut cmds = Vec::<CommandType>::new();
+    fn reseat_scroll_positions(&self, pandora: Arc<Pandora>) {
         for workspace in &self.workspaces {
             if workspace.is_active {
-                match self.gen_scroll_cmd_for_workspace_id(workspace.id) {
-                    Some(cmd) => cmds.push(cmd),
-                    None => (),
-                };
+                self.gen_scroll_cmd_for_workspace_id(pandora.clone(), workspace.id);
             }
         }
-        return cmds;
     }
 
-    fn process(&mut self, e: niri_ipc::Event) -> Vec<CommandType> {
-        let mut cmds = Vec::<CommandType>::new();
+    fn process(&mut self, pandora: Arc<Pandora>, e: niri_ipc::Event) {
         match e {
             Event::WorkspacesChanged { workspaces } => {
                 for output in &mut self.outputs {
                     output.1.max_workspace_idx = 0;
                 }
                 self.update_workspaces(&workspaces);
-                cmds = self.reseat_scroll_positions();
+                self.reseat_scroll_positions(pandora);
             },
-            Event::WorkspaceActivated {id, .. } => {
-                match self.gen_scroll_cmd_for_workspace_id(id) {
-                    Some(cmd) => cmds.push(cmd),
-                    None => (),
-                }
-            },
+            Event::WorkspaceActivated {id, .. } => self.gen_scroll_cmd_for_workspace_id(pandora, id),
             Event::WindowFocusChanged { id: _ } => {
                 // TODO - needs https://github.com/YaLTeR/niri/pull/1265 or equivalent for window positioning info
             },
             _ => (), // idc about other events rn
         }
-        return cmds;
     }
     
-    fn gen_scroll_cmd_for_workspace_id(&self, id: u64) -> Option<CommandType> {
+    fn gen_scroll_cmd_for_workspace_id(&self, pandora: Arc<Pandora>, id: u64) {
         let workspace = self.workspaces.iter().find(|w| w.id == id).unwrap();
         let curr_idx = workspace.idx;
 
         let output_name = match workspace.output.clone() {
             Some(o) => o,
-            None => return None, // focused a workspace while no outputs connected / all outputs unplugged. whatever lol
+            None => return, // focused a workspace while no outputs connected / all outputs unplugged. whatever lol
         };
         let output = match &self.outputs.iter().find(|o| o.0 == output_name) {
             Some(tuple) => &tuple.1,
             None => {
-                log(format!("{output_name} not found in config; ignoring"));
-                return None; // display not configured
+                pandora.log("niri-agent", format!("{output_name} not found in config; ignoring"));
+                return; // display not configured
             }
         };
-        match &output.mode {
-            None => return None,
+        if let Some(cmd) = match &output.mode {
+            None => None,
             Some(mode) => match mode {
                 RenderMode::ScrollVertical => {
                     let last_scroll_pos = output.img_height - output.height;
@@ -325,15 +306,13 @@ impl NiriProcessor {
                         output: output_name,
                         position: pos,
                     });
-                    log(format!("idx: {curr_idx}, max: {} | scroll dist {scroll_per_workspace} to {pos} | img {} , output {}", output.max_workspace_idx, output.img_height, output.height));
-                    return Some(CommandType::Tc(cmd));
+                    pandora.debug("niri-agent", format!("idx: {curr_idx}, max: {} | scroll dist {scroll_per_workspace} to {pos} | img {} , output {}", output.max_workspace_idx, output.img_height, output.height));
+                    Some(CommandType::Tc(cmd))
                 },
-                _ => return None,
+                _ => None,
             },
-        };
+        } {
+            pandora.handle_cmd(&cmd);
+        }
     }
-}
-
-fn log(s: String) {
-    println!("> niri-agent: {s}");
 }

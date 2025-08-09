@@ -12,7 +12,6 @@ pub fn img_into_buffer(img: &RgbaImage, f: &File) {
 }
 
 pub fn get_new_image_dimensions(orig_width: u32, orig_height: u32, output_width: Option<u32>, output_height: Option<u32>) -> (u32, u32) {
-    println!("> pandora: scaling image [{orig_width} x {orig_height}]");
     let scale_factor = match (output_width, output_height) {
         // scale factor is ratio of output to image
         // if image is bigger, it needs to be scaled down

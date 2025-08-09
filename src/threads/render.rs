@@ -17,17 +17,9 @@ use wayrs_client::protocol::{WlShm, wl_shm::Format, WlSurface, WlCallback, WlOut
 use wayrs_protocols::linux_dmabuf_v1::ZwpLinuxDmabufV1;
 use wayrs_protocols::viewporter::{WpViewport, WpViewporter};
 use wayrs_protocols::wlr_layer_shell_unstable_v1::{ZwlrLayerShellV1, ZwlrLayerSurfaceV1, zwlr_layer_surface_v1::Anchor, zwlr_layer_shell_v1::Layer};
+
 // note: output resize/mode-setting changes are not handled here
 // generic output plug/unplug thread handles start/stops for plug events
-
-// lockscreen notes:
-// need to get_lock_surface from ExtSessionLockV1, 
-// i guess i can go cleanly implement a lock thread that handles that in one thread,
-// as it can manage the output surface in one draw loop. (we'll need to handle display plug/replug there, too)
-// will need to be able to ask the agent for viewport/scroll position state.
-// since we don't dump images from cache willy-nilly, we can actually maybe just pull that out of cache and have
-// the lock thread toss it straight into a new buffer, i guess
-// maybe dmabufs will help with that? really need to take a swing at that at some point, too.
 
 #[derive(Copy, Clone)]
 pub struct RenderThreadWaylandGlobals {
@@ -91,6 +83,14 @@ fn initialize_wayland_handles(conn: &mut Connection<RenderThreadWaylandState>, o
 }
 
 impl RenderThread {
+    // after I implement the lockscreen in a relatively stateless manner, I plan to come back and refactor a lot of this
+    // notably, I should use a subcompositor for the layer shell surface, and viewporter into the active layer
+    // it would open up the door to somewhat cleanly transitioning between wallpapers on workspace change - 
+    // I need to figure out how to do opacity blending (start the new buffer at 0 alpha, and fade it in, ideally).
+    // there doesn't appear to be a way to "easily" (from my pov) adjust the opacity of a layer on the fly without just
+    // rewriting every fourth byte of the buffer memory, though
+    // https://wayland.app/protocols/alpha-modifier-v1 <- useless, int factor (?? is alpha 0-255 or 0.0-1.0)
+    //
     pub fn new(output: String, recv: Receiver<RenderThreadCommand>, pandora: Arc<Pandora>, conn: Connection<RenderThreadWaylandState>) -> RenderThread {
         return RenderThread {
             name: output,
@@ -100,10 +100,6 @@ impl RenderThread {
             globals: None,
             render_state: None,
         }
-    }
-
-    fn log(&self, s: String) {
-        println!("> {}: {s}", self.name);
     }
 
     pub fn start(&mut self) {
@@ -117,6 +113,16 @@ impl RenderThread {
             }
         }
         self.draw_loop();
+    }
+
+    fn log(&self, s: String) {
+        self.pandora.log(self.name.as_str(), s);
+    }
+    fn verbose(&self, s: String) {
+        self.pandora.verbose(self.name.as_str(), s);
+    }
+    fn debug(&self, s: String) {
+        self.pandora.debug(self.name.as_str(), s);
     }
 
     fn end(&mut self) {
@@ -176,20 +182,20 @@ impl RenderThread {
         };
 
         let (img_width, img_height) = self.pandora.read_img_to_file(&cmd.image, &file, scale_to)?;
+        let bytes_per_row: i32 = img_width as i32 * 4;
+        let total_bytes: i32 = bytes_per_row * img_height as i32;
+
         if img_width < output_width || img_height < output_height {
             self.log(format!("image scaled to {img_width} x {img_height}, but output is {output_width} by {output_height}.\n   Try static mode for this image, as it's maybe insufficient for the desired mode :("));
             return Err(DaemonError::LogicalError);
         }
-        self.log(format!("file loaded and scaled to {img_width} x {img_height}"));
-        let bytes_per_row: i32 = img_width as i32 * 4;
-        let total_bytes: i32 = bytes_per_row * img_height as i32;
+        self.verbose(format!("file loaded and scaled to {img_width} x {img_height}"));
 
         let pool = globals.shm.create_pool(&mut self.conn, OwnedFd::from(file.try_clone().unwrap()), total_bytes);
         let buf = pool.create_buffer(&mut self.conn, 0, img_width as i32, img_height as i32, bytes_per_row, Format::Argb8888 );
         globals.surface.attach(&mut self.conn, Some(buf), 0, 0); //hardcoded 0s l0l
         
-
-        self.log(format!("cropping surface view to {output_width} x {output_height}"));
+        self.verbose(format!("cropping surface view to {output_width} x {output_height}"));
 
         let scroll_state = match cmd.mode {
             RenderMode::Static => {
@@ -201,7 +207,8 @@ impl RenderThread {
                 let width_offset = (img_width - output_width) / 2;
                 let height_offset = (img_height - output_height) / 2;
 
-                self.log(format!("static mode: offset[{} x {}] geom[{} x {}]", width_offset, height_offset, output_width, output_height));
+                self.verbose(format!("static mode: offset[{} x {}] geom[{} x {}]",
+                    width_offset, height_offset, output_width, output_height));
 
                 globals.viewport.set_source(&mut self.conn,
                     width_offset.into(), height_offset.into(),
@@ -343,7 +350,7 @@ impl RenderThread {
             }
         };
         if !valid {
-            self.log("would scroll past end and explode".to_string());
+            self.verbose("would scroll past end and explode".to_string());
             render_state.scrolling = Some(scroll_state);
             self.render_state = Some(render_state);
             return;
@@ -363,7 +370,7 @@ impl RenderThread {
         render_state.scrolling = Some(scroll_state);
         self.render_state = Some(render_state);
 
-        self.log(format!("scrolling from {} to {}, expected duration {:?} (was already scrolling: {})", scroll_state.start_pos, scroll_state.end_pos, scroll_state.anim_duration, is_already_scrolling));
+        self.debug(format!("scrolling from {} to {}, expected duration {:?} (was already scrolling: {})", scroll_state.start_pos, scroll_state.end_pos, scroll_state.anim_duration, is_already_scrolling));
 
         if !is_already_scrolling {
             self.start_scroll_anim();
@@ -374,7 +381,7 @@ impl RenderThread {
         let mut render_state = self.render_state.take().unwrap();
         let globals = self.globals.as_ref().unwrap();
 
-        self.log(format!("animation starting. start_pos: {}, end_pos: {}",
+        self.debug(format!("animation starting. start_pos: {}, end_pos: {}",
             render_state.scrolling.unwrap().start_pos,
             render_state.scrolling.unwrap().end_pos));
     

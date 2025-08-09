@@ -57,10 +57,10 @@ fn watch(path: &PathBuf, pandora: Arc<Pandora>) {
                                 pandora::pithos::commands::DaemonCommand::ReloadConfig(
                                     conf)));
                     },
-                    Err(e) => println!("{e:?}"),
+                    Err(e) => pandora.log("config-watcher", format!("{e:?}")),
                 };
             }
-            Err(e) => println!("watch error: {:?}", e),
+            Err(e) => pandora.log("config-watcher", format!("watch error: {e:?}")),
         };
     }
 }

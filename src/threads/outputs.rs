@@ -45,7 +45,7 @@ fn run(config: DaemonConfig, pandora: Arc<Pandora>, cmd_queue: Arc<Mutex<Receive
     let mut conn = Connection::connect().unwrap();
     let mut state = State::default();
     state.config = config;
-    state.pandora = Some(pandora);
+    state.pandora = Some(pandora.clone());
     conn.add_registry_cb(wl_registry_cb);
     loop {
         conn.flush(IoMode::Blocking).unwrap();
@@ -66,7 +66,7 @@ fn run(config: DaemonConfig, pandora: Arc<Pandora>, cmd_queue: Arc<Mutex<Receive
                 }
             },
             Err(e) => {
-                log(format!("error acquiring channel lock: {e:?}"));
+                pandora.debug("output-watcher", format!("error acquiring channel lock: {e:?}"));
             }
         }
     }
@@ -120,7 +120,7 @@ fn wl_registry_cb(conn: &mut Connection<State>, state: &mut State, event: &wl_re
 }
 
 fn wl_output_cb(ctx: EventCtx<State, WlOutput>) {
-    let pandora = ctx.state.pandora.as_ref().unwrap();
+    let pandora = ctx.state.pandora.as_ref().unwrap().clone();
     let output = &mut ctx
         .state
         .outputs
@@ -136,7 +136,7 @@ fn wl_output_cb(ctx: EventCtx<State, WlOutput>) {
                 let output_config = match config_outputs.iter().find(|oc| oc.name == output_name) {
                     Some(conf) => conf,
                     None => {
-                        log(format!("could not find a config stanza for {output_name}, ignoring"));
+                        pandora.log("output-watcher", format!("mode change: could not find a config stanza for {output_name}, ignoring"));
                         return;
                     },
                 };
@@ -169,7 +169,7 @@ fn wl_output_cb(ctx: EventCtx<State, WlOutput>) {
             let output_config = match config_outputs.iter().find(|oc| oc.name == output_name) {
                 Some(conf) => conf,
                 None => {
-                    log(format!("could not find a config stanza for {output_name}, ignoring"));
+                    pandora.log("output-watcher", format!("connect: could not find a config stanza for {output_name}, ignoring"));
                     return;
                 },
             };
@@ -192,8 +192,4 @@ fn wl_output_cb(ctx: EventCtx<State, WlOutput>) {
         wl_output::Event::Name(name) => output.name = Some(name.into_string().unwrap()),
         _ => (),
     }
-}
-
-fn log(s: String) {
-    println!("> outputs: {s}");
 }

@@ -5,10 +5,10 @@ use ::pandora::pithos::config::load_config;
 use std::sync::Arc;
 
 fn main() -> miette::Result<()> {
-    cli::cli();
+    let verbosity = cli::cli();
     let config = load_config()?;
     // initialize daemon & ipc handlers, and glue them together.
-    let mut pandora = crate::pandora::Pandora::new();
+    let mut pandora = crate::pandora::Pandora::new(config.clone(), verbosity);
     let ipc = crate::threads::ipc::InboundCommandHandler::new();
     let outputs = crate::threads::outputs::OutputHandler::new(config.clone());
     let niri = crate::threads::niri::NiriAgent::new(config.clone());

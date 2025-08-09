@@ -1,5 +1,4 @@
 use serde::{Serialize, Deserialize};
-
 use super::config::DaemonConfig;
 // ===== TRAITS AND MISC DATA STRUCTS =====
 #[derive(knuffel::DecodeScalar, Serialize, Deserialize, PartialEq, Copy, Clone, Debug)]
