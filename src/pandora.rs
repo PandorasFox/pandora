@@ -1,65 +1,36 @@
-use crate::threads::config::ConfigWatcher;
-use crate::threads::logger::LogThread;
-use crate::threads::niri::NiriAgent;
-use crate::threads::outputs::OutputHandler;
-use crate::threads::ipc::InboundCommandHandler;
-use crate::threads::render::{RenderThread};
+use miette::Result;
+use pandora::daemon::Daemon;
 use pandora::pithos::config::{DaemonConfig, LogLevel};
 use pandora::pithos::misc::get_new_image_dimensions;
-use pandora::pithos::commands::{CommandType, DaemonCommand, LoadImageCommand, RenderThreadCommand};
+use pandora::pithos::commands::{CommandType, DaemonCommand, RenderThreadCommand};
 use pandora::pithos::error::{CommandError, DaemonError};
-use pandora::pithos::sockets::write_response_to_client_socket;
-use pandora::wayland::render_helpers::RenderThreadWaylandState;
+use pandora::threads::render::WallpaperThreadHandle;
+use pandora::threads::config::ConfigWatcher;
+use pandora::threads::logger::LogThread;
+use pandora::threads::niri::NiriAgent;
+use pandora::threads::Thread;
+use pandora::wayland::render_base::{OutputState, RenderThreadState};
 
 use std::collections::HashMap;
-use std::fs::File;
-use std::os::unix::net::{UnixStream};
+use std::ffi::CString;
+use std::fs::{self, File};
 use std::sync::{Arc, RwLock, Weak};
-use std::sync::mpsc::{channel, Sender};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::thread;
 
 use image::imageops::FilterType;
 use image::{RgbaImage, ImageReader};
 use wayrs_client::Connection;
+use wayrs_client::protocol::{WlSurface, WlOutput};
+use wayrs_protocols::wlr_layer_shell_unstable_v1::{ZwlrLayerShellV1, zwlr_layer_surface_v1::Anchor, zwlr_layer_shell_v1::Layer};
 
-// daemon utility struct(s)
-pub struct ThreadHandle {
-    sender: Sender<RenderThreadCommand>,
-    thread: JoinHandle<()>,
-}
-
-// move this to render.rs lol
-impl ThreadHandle {
-    fn new(output: String, pandora: Arc<Pandora>) -> ThreadHandle {
-        let (host_sender, thread_receiver) = channel::<RenderThreadCommand>();
-        let conn = Connection::<RenderThreadWaylandState>::connect().unwrap();
-
-        let thread = thread::spawn(move || {
-            RenderThread::new(
-                output,
-                thread_receiver,
-                pandora,
-                conn,
-            ).start();
-        });
-
-        return ThreadHandle {
-            sender: host_sender,
-            thread: thread,
-        };
-    }
-}
 
 #[derive(Clone)]
 pub struct Pandora {
     logger: Arc<LogThread>,
-    cmd_ipc_thread: Option<Arc<InboundCommandHandler>>,
-    outputs_thread: Option<Arc<OutputHandler>>,
     niri_ag_thread: Option<Arc<NiriAgent>>,
-    configw_thread: Option<Arc<ConfigWatcher>>,
+    configw_thread: Arc<ConfigWatcher>,
     // key: output name
-    threads: Arc<RwLock<HashMap<String, ThreadHandle>>>,
+    bgwallp_thread: Arc<WallpaperThreadHandle>,
     // key: file path
     // useful central cache of loaded images for lockscreen etc
     images: Arc<RwLock<HashMap<String, RgbaImage>>>,
@@ -67,69 +38,35 @@ pub struct Pandora {
     config: Arc<RwLock<DaemonConfig>>,
 }
 
-impl Pandora {
-    pub fn new(config: DaemonConfig, verbosity: LogLevel) -> Arc<Pandora> {
-        return Arc::new(Pandora {
-            logger: LogThread::new(verbosity),
-            cmd_ipc_thread: None,
-            outputs_thread: None,
-            niri_ag_thread: None,
-            configw_thread: None,
-            threads: Arc::new(RwLock::new(HashMap::<String, ThreadHandle>::new())),
-            images: Arc::new(RwLock::new(HashMap::<String, RgbaImage>::new())),
-            config: Arc::new(RwLock::new(config)),
-        });
-    }
-
-    pub fn log(&self, name: &str, msg: String) {
+impl Daemon for Pandora {
+    fn log(&self, name: &str, msg: String) {
         self.logger.log(LogLevel::DEFAULT, name, msg);
     }
-    pub fn debug(&self, name: &str, msg: String) {
+
+    fn debug(&self, name: &str, msg: String) {
         self.logger.log(LogLevel::DEBUG, name, msg);
     }
-    pub fn verbose(&self, name: &str, msg: String) {
+
+    fn verbose(&self, name: &str, msg: String) {
         self.logger.log(LogLevel::VERBOSE, name, msg);
     }
 
-    pub fn bind_threads(&mut self,
-        ipc: Arc<InboundCommandHandler>,
-        outputs: Arc<OutputHandler>,
-        niri: Arc<NiriAgent>,
-        config: Arc<ConfigWatcher>,
-    ) -> &mut Self {
-        self.cmd_ipc_thread = Some(ipc);
-        self.outputs_thread = Some(outputs);
-        self.niri_ag_thread = Some(niri);
-        self.configw_thread = Some(config);
-        return self;
+    fn apply_role_to_surface(self: Arc<Self>, conn: &mut Connection<RenderThreadState>, wl_surface: &WlSurface, wl_output: &WlOutput, output_state: &OutputState) {
+        let width = output_state.width;
+        let height = output_state.height;
+        let layer_shell = conn.bind_singleton::<ZwlrLayerShellV1>(4..=5).unwrap();
+        let layer_surface = layer_shell.get_layer_surface(conn, *wl_surface, Some(*wl_output), Layer::Background, CString::new("pandora").unwrap());
+                
+        layer_surface.set_size(conn, width as u32, height as u32);
+        layer_surface.set_anchor(conn, Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right );
+        layer_surface.set_exclusive_zone(conn, -1);
+                
+        conn.set_callback_for(layer_surface, pandora::wayland::render_base::layer_shell_callback);
+        wl_surface.commit(conn);
+        conn.blocking_roundtrip().unwrap();
     }
 
-    fn reload_config(&self, cmd: &DaemonCommand) {
-        {
-            match self.config.write() {
-                Ok(_conf) => {
-                    // daemon should cache the current config so the lockscreen has current config cloned when it spawns
-                }
-                Err(_e) => {
-
-                }
-            }
-        }
-        // if sending to the other perpetual-threads fails i am assuming shit's fucked for other reasons
-        let _ = self.outputs_thread.as_ref().unwrap().queue.send(cmd.clone());
-        let _ = self.niri_ag_thread.as_ref().unwrap().queue.send(cmd.clone());
-    }
-
-    pub fn start(&self, weak: Weak<Pandora> ) {
-        self.outputs_thread.as_ref().unwrap().start(weak.clone());
-        self.niri_ag_thread.as_ref().unwrap().start(weak.clone());
-        self.configw_thread.as_ref().unwrap().start(weak.clone());
-        // main thread control flow loop
-        self.log("pandora", "startup completed; entering into ipc listen loop! :3".to_string());
-        self.cmd_ipc_thread.as_ref().unwrap().start(weak);
-    }
-
-    pub fn handle_cmd(&self, cmd: &CommandType){
+    fn handle_cmd(self: Arc<Self>, cmd: &CommandType){
         match cmd {
             CommandType::Dc(dc) => self.handle_daemon_command(&dc),
             // CommandType::Ac(ac) => {}
@@ -137,107 +74,23 @@ impl Pandora {
         };
     }
 
-    fn handle_daemon_command(&self, dc: &DaemonCommand) {
-        match dc {
-            DaemonCommand::LoadImage(c) => _ = self.load_image(&c.image.clone()),
-            DaemonCommand::ReloadConfig(_) => {
-                self.reload_config(dc);
-            },
-            DaemonCommand::Stop => {
-                self.log("pandora","goodbye!".to_string());
-                std::process::exit(0);
-            },
-            DaemonCommand::OutputModeChange(_) => {
-                let _ = self.niri_ag_thread.as_ref().unwrap().queue.send(dc.clone());
-            },
-            DaemonCommand::Lock => self.lock(),
-        };
-    }
-
-    fn lock(&self) {
-        {
-            match self.config.read() {
-                Ok(conf) => crate::threads::lockscreen::lock(self.logger.inbox.clone(), conf.clone()),
-                Err(_) => self.log("pandora", "locking screen failed: could not acquire config read-lock".to_string()),
-            }
-        }
-        
-    }
-    
-    fn handle_thread_command(&self, tc: &RenderThreadCommand) {
-        let output: String;
-        let mut can_spawn = false;
-        let mut join_after = false;
-        let mut image_to_preload: Option<String> = None;
-        match tc.clone() {
-            RenderThreadCommand::Render(c) => {
-                output = c.output;
-                can_spawn = true;
-                image_to_preload = Some(c.image);
-            }
-            RenderThreadCommand::Stop(c) => {
-                output = c.output;
-                join_after = true;
-            }
-            RenderThreadCommand::Scroll(c) => {
-                output = c.output;
-            },
-        };
-        if image_to_preload.is_some() {
-            self.handle_daemon_command(&DaemonCommand::LoadImage(LoadImageCommand { image:image_to_preload.unwrap() }));
-        }
-        let ret = self.dispatch_thread_command(output.clone(), &tc, can_spawn);
-        if join_after && ret.is_ok() { // if a stop command error'd in dispatch, it either crashed or didn't exist; no need to clean up
-            // if we full-steam ahead, we will get to .is_finished before the thread might be finished
-            thread::sleep(Duration::from_millis(1)); // seems to be sufficient for letting the thread exit before we clean it up
-            self.cleanup_thread(&output);
-        }
-    }
-
-    fn dispatch_thread_command(&self, output: String, c: &RenderThreadCommand, spawn: bool) -> Result<(), DaemonError> {
-        // read lock:
-        // check if thread exists, dispatch and return if it does.
-        {
-            let read_threads = self.threads.read()?;
-            match read_threads.get(&output) {
-                Some(thread) => {
-                    if thread.sender.send(c.clone()).is_ok() {
+    fn load_image(self: Arc<Self>, path: &String) -> Result<(), DaemonError>  {
+        { // read lock
+            match self.images.read() {
+                Ok(images_check) => {
+                    if images_check.contains_key(&path.clone()) {
+                        self.verbose("pandora", format!("file {} already loaded", path.clone()));
                         return Ok(());
                     }
-                    drop(read_threads); // drop read thread bc we're done reading & need to re-enter to clean up thread
-                    self.cleanup_thread(&output);
-                    return Err(CommandError::new("could not send command to thread; cleaned it up"));
-                },
-                None => {
-                    drop(read_threads); // release lock, result not found.
-                    if spawn {
-                       return self.spawn_thread(output, c);
-                    } else {
-                        return Err(CommandError::new("invalid thread command: thread does not exist"));
-                    }
-                },
+                }
+                Err(e) => panic!("{e:?}"),
             }
         }
-        
-    }
-
-    fn spawn_thread(&self, output: String, c: &RenderThreadCommand) -> Result<(), DaemonError> {
-        let thread = ThreadHandle::new(output.clone(), Arc::new(self.clone()));
-        thread.sender.send(c.clone()).expect("could not send initial command to thread after spawning");
-        {
-            let mut write_threads = self.threads.write()?;
-            write_threads.insert(output, thread);
-        }
-        return Ok(());
-    }
-
-    pub fn load_image(&self, path: &String) -> Result<(), DaemonError>  {
         let img= ImageReader::open(path.clone())?.decode()?;
-        {
-            let images_lock = self.images.write();
-            match images_lock {
+        { //write lock
+            match self.images.write() {
                 Ok(mut images_table) => {
-                    if images_table.contains_key(&path.clone()) {
+                    if images_table.contains_key(&path.clone()) { // could have been written while we loaded the image!
                         self.verbose("pandora", format!("file {} already loaded", path.clone()));
                         return Ok(());
                     }
@@ -250,26 +103,23 @@ impl Pandora {
         }
     }
 
-    pub fn get_image_dimensions(&self, img: String) -> Result<(u32, u32), ()> {
-        {
-            let images_lock = self.images.read();
-            match images_lock {
-                Ok(images_table) => {
-                    if images_table.contains_key(&img) {
-                        let image = images_table.get(&img).unwrap();
-                        return Ok((image.width(), image.height()));
-                    } else {
-                        return Err(());
-                    }
-                },
-                Err(e) => panic!("{e:?}"),
-            };
-        }
+    fn get_image_dimensions(self: Arc<Self>, img: String) -> Result<(u32, u32), ()> {
+        match self.images.read() {
+            Ok(images_table) => {
+                if images_table.contains_key(&img) {
+                    let image = images_table.get(&img).unwrap();
+                    return Ok((image.width(), image.height()));
+                } else {
+                    return Err(());
+                }
+            },
+            Err(e) => panic!("{e:?}"),
+        };
     }
 
     // if scale_to is provided, uses the provided width/height dimensions of the output to scale image appropriately
     // if only one dimension is provided, scales to that one and keeps aspect ratio.
-    pub fn read_img_to_file(&self, img: &String, f: &File, scale_to: Option<(Option<u32>, Option<u32>)>) -> Result<(u32, u32), DaemonError> {
+    fn read_img_to_file(self: Arc<Self>, img: &String, f: &File, scale_to: Option<(Option<u32>, Option<u32>)>) -> Result<(u32, u32), DaemonError> {
         let mut image = None;
         {
             let images = self.images.read()?;
@@ -302,30 +152,114 @@ impl Pandora {
             };
         }
     }
+}
 
-    fn cleanup_thread(&self, output: &String) {
+impl Pandora {
+    pub fn new(config: DaemonConfig, verbosity: LogLevel) -> Arc<Pandora> {
+        let logger = LogThread::new(verbosity);
+        let config_watcher = ::pandora::threads::config::ConfigWatcher::new();
+        let wallpaper = WallpaperThreadHandle::new();
+        let niri = match ::pandora::threads::niri::NiriAgent::new(config.clone()) {
+            Ok(agent) => Some(agent),
+            Err(_e) => /* log _e */ None,
+        };
+
+        return Arc::new(Pandora {
+            logger: logger,
+            niri_ag_thread: niri,
+            configw_thread: config_watcher,
+            bgwallp_thread: wallpaper,
+            images: Arc::new(RwLock::new(HashMap::<String, RgbaImage>::new())),
+            config: Arc::new(RwLock::new(config)),
+        });
+    }
+
+    pub fn start(self: Arc<Self>, weak: Weak<Pandora>, config: DaemonConfig) -> miette::Result<()> {
+        match self.clone().try_load_images(&config) {
+            Err(msg) => return Err(miette::miette!(msg)),
+            Ok(()) => (),
+        };
+        self.configw_thread.start(weak.clone());
+        self.bgwallp_thread.start(weak.clone(), config);
+        match &self.niri_ag_thread {
+            Some(niri) => niri.start(weak.clone()),
+            None => self.log("pandora", "niri agent thread could not spawn!!".to_string()),
+        };
+
+        // main thread control flow loop
+        self.log("pandora", "startup completed; entering into ipc listen loop! :3".to_string());
+        ::pandora::threads::ipc::InboundCommandHandler::new().start(weak);
+        Ok(())
+    }
+
+    fn reload_config(self: Arc<Self>, config: &DaemonConfig) {
+        match self.config.write() {
+            Ok(mut conf) => {
+                conf.outputs = config.outputs.clone();
+                // if we add more non-logging config nodes we handle them here
+                // i guess we could actually update the verbosity level here and pull that out of the logger..... eh.
+            }
+            Err(e) => {
+                self.log("pandora", format!("{e:?}"));
+            }
+        }
+        match self.clone().try_load_images(config) {
+            Err(msg) => return self.log("pandora", msg),
+            Ok(()) => (),
+        };
+        let _ = self.niri_ag_thread.as_ref().unwrap().queue.send(DaemonCommand::ReloadConfig(config.clone()));
+    }
+
+    fn try_load_images(self: Arc<Pandora>, config: &DaemonConfig) -> Result<(), String> {
+        for output in &config.outputs {
+            self.clone().try_load_image(output.image.clone())?;
+            if output.lockscreen.is_some() {
+                let path = output.lockscreen.as_ref().unwrap().image.clone();
+                self.clone().try_load_image(path)?;
+            }
+            if output.workspaces.is_some() {
+                for workspace in output.workspaces.as_ref().unwrap() {
+                    self.clone().try_load_image(workspace.image.clone())?;
+                }
+            }
+        }
+        return Ok(())
+    }
+
+    fn try_load_image(self: Arc<Pandora>, path: String) -> Result<(), String> {
+        if fs::exists(&path.clone()).is_err() {
+            return Err(format!("could not preload {path} during init"));
+        }
+        thread::spawn(move|| self.load_image(&path));
+        return Ok(())
+    }
+
+    fn handle_daemon_command(self: Arc<Pandora>, dc: &DaemonCommand) {
+        match dc {
+            DaemonCommand::ReloadConfig(config) => {
+                self.reload_config(config);
+            },
+            DaemonCommand::Stop => {
+                self.log("pandora","goodbye!".to_string());
+                std::process::exit(0);
+            },
+            DaemonCommand::OutputModeChange(_) => {
+                let _ = self.niri_ag_thread.as_ref().unwrap().queue.send(dc.clone());
+            },
+            DaemonCommand::Lock => self.lock(),
+        };
+    }
+
+    fn lock(self: Arc<Pandora>) {
         {
-            let mut write_threads = self.threads.write().expect("could not acquire read lock for dispatching command");
-            match write_threads.remove(output) {
-                Some(thread) => {
-                    write_threads.shrink_to_fit();
-                    if thread.thread.is_finished() {
-                        let _ = thread.thread.join();
-                        return;
-                    } else {
-                        // can happen when a stop is issued -> daemon gets here before the thread stops
-                        // .... but also could happen on a genuine wedge, so we don't want to lie about that.
-                        self.log("pandora", format!("could not join to thread for {output} (wedged?)"));
-                    }
-                },
-                None => self.log("pandora", format!("named thread for {output} already stopped or doesn't exist")),
+            match self.config.read() {
+                Ok(conf) => pandora::threads::lockscreen::lock(self.logger.inbox.clone(), conf.clone()),
+                Err(_) => self.log("pandora", "locking screen failed: could not acquire config read-lock".to_string()),
             }
         }
     }
-
-    pub fn process_ipc(&self, socket: &UnixStream) {
-        let cmd = ::pandora::pithos::sockets::read_command_from_client_socket(&socket.try_clone().expect("couldn't clone socket"));
-        self.handle_cmd(&cmd);
-        write_response_to_client_socket("command dispatched", socket).expect("failed to write response to inbound ipc");
+    
+    fn handle_thread_command(self: Arc<Pandora>, tc: &RenderThreadCommand) {
+        let _ = self.bgwallp_thread.inbox.send(tc.clone());
     }
 }

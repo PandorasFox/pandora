@@ -1,4 +1,4 @@
-use ::pandora::pithos::config::LogLevel;
+use crate::pithos::config::LogLevel;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;

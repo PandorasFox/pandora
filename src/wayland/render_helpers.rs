@@ -1,3 +1,4 @@
+/*
 use crate::pithos::{anims::spring::Spring, commands::RenderMode};
 
 use std::fs::File;
@@ -10,8 +11,6 @@ use wayrs_client::protocol::wl_surface::WlSurface;
 use wayrs_client::protocol::WlBuffer;
 use wayrs_client::protocol::WlShmPool;
 use wayrs_protocols::viewporter::WpViewport;
-
-
 
 #[derive(Default)]
 pub struct RenderThreadWaylandState {
@@ -125,3 +124,4 @@ fn wl_output_cb(ctx: EventCtx<RenderThreadWaylandState, WlOutput>) {
         _ => (),
     }
 }
+     */

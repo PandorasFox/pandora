@@ -14,11 +14,6 @@ pub enum RenderMode {
 
 // ===== COMMAND STRUCTS =====
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct LoadImageCommand {
-    pub image: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct RenderCommand {
     pub output: String,
     pub image: String,
@@ -26,15 +21,9 @@ pub struct RenderCommand {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[derive(clap::Args)]
-pub struct StopCommand {
-    pub output: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ScrollCommand {
     pub output: String,
-    pub position: u32,
+    pub position: i32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -54,7 +43,6 @@ pub enum CommandType {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum DaemonCommand {
-    LoadImage(LoadImageCommand),
     Lock,
     ReloadConfig(DaemonConfig),
     OutputModeChange(ModeCommand),
@@ -64,6 +52,5 @@ pub enum DaemonCommand {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum RenderThreadCommand {
     Render(RenderCommand),
-    Stop(StopCommand),
     Scroll(ScrollCommand),
 }

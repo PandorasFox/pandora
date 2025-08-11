@@ -1,5 +1,5 @@
 use ::pandora::pithos::config::LogLevel;
-use ::pandora::pithos::commands::{CommandType, DaemonCommand, StopCommand, RenderThreadCommand};
+use ::pandora::pithos::commands::{CommandType, DaemonCommand};
 use clap::{arg, Parser};
 use std::process;
 
@@ -17,7 +17,6 @@ struct Interface {
 #[derive(Clone, clap::Subcommand)]
 enum CliCommand {
     StopDaemon,
-    StopThread(StopCommand),
     Lock,
 }
 
@@ -26,7 +25,6 @@ pub fn cli() -> Option<LogLevel> { // the only config pass-able to the daemon vi
     if let Some(command) = cli.command {
         let cmd = match command {
             CliCommand::StopDaemon => CommandType::Dc(DaemonCommand::Stop),
-            CliCommand::StopThread(c) => CommandType::Tc(RenderThreadCommand::Stop(c)),
             CliCommand::Lock => CommandType::Dc(DaemonCommand::Lock),
         };
         println!("{}", ::pandora::pithos::sockets::write_command_to_daemon_socket(&cmd).expect("could not send command (is the daemon running?)"));

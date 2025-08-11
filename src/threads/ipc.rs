@@ -1,9 +1,9 @@
+use crate::daemon::Daemon;
+
 use std::sync::{Arc, Weak};
 use std::thread;
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixListener};
-
-use crate::pandora::Pandora;
 
 #[derive(Clone)]
 pub struct InboundCommandHandler {
@@ -22,12 +22,15 @@ impl InboundCommandHandler {
         });
     }
 
-    pub fn start(&self, pandora: Weak<Pandora>) {
+    pub fn start(&self, pandora: Weak<dyn Daemon + Send + Sync>) {
         for connection in self.listener.incoming() {
             let p = pandora.upgrade().take().unwrap();
-            thread::spawn(move || 
-                p.process_ipc(&connection.expect(
-                    "could not accept incoming client socket/connection")));
+            thread::spawn(move || {
+                let socket = connection.unwrap();
+                let cmd = crate::pithos::sockets::read_command_from_client_socket(&socket);
+                p.handle_cmd(&cmd);
+                crate::pithos::sockets::write_response_to_client_socket("command dispatched", &socket).expect("failed to write response to inbound ipc");
+            });
         }
     }
 }
