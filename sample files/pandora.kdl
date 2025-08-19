@@ -21,4 +21,10 @@ output "DP-2" {
     mode "static"
 }
 
+animation {
+
+    // Slow down animation by this factor. Values below 1 speeds up instead.
+    // slowdown 0.5
+}
+
 // logging "default"
