@@ -1,17 +1,20 @@
 use crate::daemon::Daemon;
-use crate::pithos::commands::{CommandType, DaemonCommand, ModeCommand, RenderCommand, RenderMode, RenderThreadCommand, ScrollCommand};
+use crate::pithos::commands::{
+    CommandType, DaemonCommand, ModeCommand, RenderCommand, RenderMode, RenderThreadCommand,
+    ScrollCommand,
+};
 use crate::pithos::config::DaemonConfig;
 use crate::pithos::misc::get_new_image_dimensions;
 
 use std::collections::HashMap;
 use std::ops::Index;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 
 use miette::Error;
-use niri_ipc::{Event, Output, Request, Response, Workspace};
 use niri_ipc::socket::Socket;
+use niri_ipc::{Event, Output, Request, Response, Workspace};
 
 pub struct NiriAgent {
     config: DaemonConfig,
@@ -27,10 +30,10 @@ impl NiriAgent {
                 Ok(Arc::new(NiriAgent {
                     config,
                     cmd_queue: Arc::new(Mutex::new(recv)),
-                    queue: send
+                    queue: send,
                 }))
-            },
-            Err(e) => Err(miette::miette!(e)), // todo 
+            }
+            Err(e) => Err(miette::miette!(e)), // todo
         }
     }
 
@@ -38,12 +41,15 @@ impl NiriAgent {
         let pandora = weak.upgrade().take().unwrap();
         let config = self.config.clone();
         let cmd_queue = self.cmd_queue.clone();
-        match thread::Builder::new().name("niri agent".to_string())
+        match thread::Builder::new()
+            .name("niri agent".to_string())
             .spawn(move || {
                 run(config, pandora.clone(), cmd_queue);
-                pandora.log("niri-agent", "thread exiting (is session exiting?)".to_string());
-            }
-        ) {
+                pandora.log(
+                    "niri-agent",
+                    "thread exiting (is session exiting?)".to_string(),
+                );
+            }) {
             Ok(_) => (), // [tf2 medic voice] i will live forever!
             Err(e) => panic!("could not spawn niri ipc handler thread: {e:?}"),
         };
@@ -65,7 +71,11 @@ fn get_niri_state(socket: &mut Socket) -> (HashMap<String, Output>, Vec<Workspac
     return (outputs_response, workspaces_response);
 }
 
-fn run(config: DaemonConfig, pandora: Arc<dyn Daemon + Send + Sync>, cmd_queue: Arc<Mutex<Receiver<DaemonCommand>>>) {
+fn run(
+    config: DaemonConfig,
+    pandora: Arc<dyn Daemon + Send + Sync>,
+    cmd_queue: Arc<Mutex<Receiver<DaemonCommand>>>,
+) {
     let mut socket = Socket::connect().unwrap();
     let mut processor = NiriProcessor::default();
     processor.config = config;
@@ -85,20 +95,21 @@ fn run(config: DaemonConfig, pandora: Arc<dyn Daemon + Send + Sync>, cmd_queue: 
                                 DaemonCommand::OutputModeChange(new_mode) => {
                                     // update state => reflow output
                                     processor.update_mode(new_mode);
+                                    // not necessary once render reseat implementation is finished
                                     processor.reseat_scroll_positions(pandora.clone());
-                                },
+                                }
                                 DaemonCommand::ReloadConfig(config) => {
                                     if processor.update_config(config, pandora.clone()) {
                                         processor.reseat_scroll_positions(pandora.clone());
                                     }
                                 }
-                                DaemonCommand::Lock => (), // i think ? 
+                                DaemonCommand::Lock => (), // i think ?
                                 DaemonCommand::Stop => (),
                             }
-                        },
+                        }
                         Err(_) => (), // ??
                     }
-                },
+                }
                 Err(e) => {
                     pandora.log("niri-agent", format!("error acquiring channel lock: {e:?}"));
                 }
@@ -127,14 +138,21 @@ struct NiriProcessor {
 }
 
 impl NiriProcessor {
-    fn update_config(&mut self, new_config: DaemonConfig, pandora: Arc<dyn Daemon + Send + Sync>) -> bool {
+    fn update_config(
+        &mut self,
+        new_config: DaemonConfig,
+        pandora: Arc<dyn Daemon + Send + Sync>,
+    ) -> bool {
         // this kinda sucks and i should really really rewrite it into an "update state" or something
         let mut mutated = false;
         for new_output_conf in &new_config.outputs {
             let p = pandora.clone();
             let new_mode = new_output_conf.mode.unwrap_or(RenderMode::Static);
-            let (output_name, state) = match self.outputs.iter_mut()
-            .find(|o| o.0 == new_output_conf.name) {
+            let (output_name, state) = match self
+                .outputs
+                .iter_mut()
+                .find(|o| o.0 == new_output_conf.name)
+            {
                 Some(v) => v,
                 None => continue,
             };
@@ -143,13 +161,28 @@ impl NiriProcessor {
             // live config reloading for the end users...... they know not nor care not about my sins, probably
             // next time any of this code needs any touching it *shall* be refactored into an UpdateState internal func
             // that the other functions leverage sanely
-            if state._current_image != new_output_conf.image || state.mode.unwrap_or(RenderMode::Static) != new_mode {
+            if state._current_image != new_output_conf.image
+                || state.mode.unwrap_or(RenderMode::Static) != new_mode
+            {
                 // really hacky state updating in place. brittle. YEEHAW
-                if p.clone().load_image(&new_output_conf.image.clone()).is_err() {
-                    p.clone().log("niri-agent", format!("failed to load {} for {} (does it exist?)", new_output_conf.image.clone(), new_output_conf.name.clone()));
+                if p.clone()
+                    .load_image(&new_output_conf.image.clone())
+                    .is_err()
+                {
+                    p.clone().log(
+                        "niri-agent",
+                        format!(
+                            "failed to load {} for {} (does it exist?)",
+                            new_output_conf.image.clone(),
+                            new_output_conf.name.clone()
+                        ),
+                    );
                     continue; // !
                 }
-                let (image_width, image_height) = match p.clone().get_image_dimensions(new_output_conf.image.clone()) {
+                let (image_width, image_height) = match p
+                    .clone()
+                    .get_image_dimensions(new_output_conf.image.clone())
+                {
                     Ok((w, h)) => (w, h),
                     Err(_) => unreachable!(), // LoadImage should've exploded
                 };
@@ -157,10 +190,11 @@ impl NiriProcessor {
                 let (scale_width, scale_height) = match &new_mode {
                     RenderMode::Static => (Some(state.width as u32), Some(state.height as u32)),
                     RenderMode::ScrollVertical => (Some(state.width as u32), None),
-                    RenderMode::ScrollLateral => (None, Some(state.height as u32))
+                    RenderMode::ScrollLateral => (None, Some(state.height as u32)),
                 };
 
-                let (scaled_width, scaled_height) = get_new_image_dimensions(image_width, image_height, scale_width, scale_height);
+                let (scaled_width, scaled_height) =
+                    get_new_image_dimensions(image_width, image_height, scale_width, scale_height);
 
                 state._current_image = new_output_conf.image.clone();
                 state.mode = Some(new_mode);
@@ -173,20 +207,21 @@ impl NiriProcessor {
                 };
                 p.handle_cmd(&CommandType::Tc(RenderThreadCommand::Render(cmd)));
                 mutated = true;
-            }  
+            }
         }
         self.config = new_config;
         return mutated;
     }
 
     fn update_mode(&mut self, new_mode: ModeCommand) {
-        self.outputs.iter_mut()
-        .find(|o| o.0 == new_mode.output)
-        .and_then(|o| -> Option<_> {
-            o.1.width = new_mode.new_width;
-            o.1.height = new_mode.new_height;
-            Some(o)
-        });   
+        self.outputs
+            .iter_mut()
+            .find(|o| o.0 == new_mode.output)
+            .and_then(|o| -> Option<_> {
+                o.1.width = new_mode.new_width;
+                o.1.height = new_mode.new_height;
+                Some(o)
+            });
     }
 
     fn update_workspaces(&mut self, workspaces: &Vec<Workspace>) {
@@ -207,7 +242,12 @@ impl NiriProcessor {
     fn init_state(&mut self, pandora: Arc<dyn Daemon + Send + Sync>, niri_socket: &mut Socket) {
         let (outputs, workspaces) = get_niri_state(niri_socket);
         for (output_name, output) in outputs {
-            let output_config = match self.config.outputs.iter().find(|oc| oc.name == *output_name) {
+            let output_config = match self
+                .config
+                .outputs
+                .iter()
+                .find(|oc| oc.name == *output_name)
+            {
                 Some(c) => c,
                 None => continue,
             };
@@ -221,7 +261,7 @@ impl NiriProcessor {
                     Some(mode) => match mode {
                         RenderMode::Static => (Some(output_width), Some(output_height)),
                         RenderMode::ScrollVertical => (Some(output_width), None),
-                        RenderMode::ScrollLateral => (None, Some(output_height))
+                        RenderMode::ScrollLateral => (None, Some(output_height)),
                     },
                 };
 
@@ -229,12 +269,14 @@ impl NiriProcessor {
 
                 pandora.clone().load_image(&img_path).unwrap(); // can explode on invalid images l0l
 
-                let (image_width, image_height) = match pandora.clone().get_image_dimensions(img_path.clone()) {
-                    Ok((w, h)) => (w, h),
-                    Err(_) => unreachable!(), // LoadImage should've exploded
-                };
-               
-                let (scaled_width, scaled_height) = get_new_image_dimensions(image_width, image_height, scale_width, scale_height);
+                let (image_width, image_height) =
+                    match pandora.clone().get_image_dimensions(img_path.clone()) {
+                        Ok((w, h)) => (w, h),
+                        Err(_) => unreachable!(), // LoadImage should've exploded
+                    };
+
+                let (scaled_width, scaled_height) =
+                    get_new_image_dimensions(image_width, image_height, scale_width, scale_height);
 
                 let output_state = OutputState {
                     width: mode.width as i32,
@@ -268,15 +310,17 @@ impl NiriProcessor {
                 }
                 self.update_workspaces(&workspaces);
                 self.reseat_scroll_positions(pandora);
-            },
-            Event::WorkspaceActivated {id, .. } => self.gen_scroll_cmd_for_workspace_id(pandora, id),
+            }
+            Event::WorkspaceActivated { id, .. } => {
+                self.gen_scroll_cmd_for_workspace_id(pandora, id)
+            }
             Event::WindowFocusChanged { id: _ } => {
                 // TODO - needs https://github.com/YaLTeR/niri/pull/1265 or equivalent for window positioning info
-            },
+            }
             _ => (), // idc about other events rn
         }
     }
-    
+
     fn gen_scroll_cmd_for_workspace_id(&self, pandora: Arc<dyn Daemon + Send + Sync>, id: u64) {
         let workspace = self.workspaces.iter().find(|w| w.id == id).unwrap();
         let curr_idx = workspace.idx;
@@ -288,7 +332,10 @@ impl NiriProcessor {
         let output = match &self.outputs.iter().find(|o| o.0 == output_name) {
             Some(tuple) => &tuple.1,
             None => {
-                pandora.log("niri-agent", format!("{output_name} not found in config; ignoring"));
+                pandora.log(
+                    "niri-agent",
+                    format!("{output_name} not found in config; ignoring"),
+                );
                 return; // display not configured
             }
         };
@@ -301,15 +348,18 @@ impl NiriProcessor {
                     // idx 1: 0, .... idx N: last_scroll_pos
                     // scroll pos of idx x is ((last - first) / (N - 1)) * (x-1)
                     // scroll dist should be min(that, output_height) so that if we have too few workspaces we scroll in a continuous manner
-                    let scroll_per_workspace = output.height.min((last_scroll_pos - first_scroll_pos) / (output.max_workspace_idx - 1) as i32);
-                    let pos = scroll_per_workspace  * (curr_idx - 1) as i32;
+                    let scroll_per_workspace = output.height.min(
+                        (last_scroll_pos - first_scroll_pos)
+                            / (output.max_workspace_idx - 1) as i32,
+                    );
+                    let pos = scroll_per_workspace * (curr_idx - 1) as i32;
                     let cmd = RenderThreadCommand::Scroll(ScrollCommand {
                         output: output_name,
                         position: pos,
                     });
                     pandora.debug("niri-agent", format!("idx: {curr_idx}, max: {} | scroll dist {scroll_per_workspace} to {pos} | img {} , output {}", output.max_workspace_idx, output.img_height, output.height));
                     Some(CommandType::Tc(cmd))
-                },
+                }
                 _ => None,
             },
         } {
