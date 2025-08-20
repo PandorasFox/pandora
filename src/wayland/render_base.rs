@@ -172,6 +172,7 @@ pub struct WallpaperRenderState {
     pub position_x: i32,
     pub position_y: i32,
     pub scroll_state: Option<ScrollState>, // should be None'd once scroll is finished
+    pub slowdown: f64, // must be updated whenever config reload percolates to render thread
 }
 
 impl WallpaperRenderState {
@@ -184,6 +185,7 @@ impl WallpaperRenderState {
         wl_output: WlOutput,
         output_state: &OutputState,
         initial_pos: Option<(i32, i32)>,
+        slowdown: f64,
     ) -> Self {
         // create new buffer, load image into it, attach it to surface, apply role through daemon
         let pandora = weak.upgrade().unwrap();
@@ -271,6 +273,7 @@ impl WallpaperRenderState {
             position_y,
             scroll_state: None,
             mode: mode,
+            slowdown,
         };
     }
 
@@ -298,6 +301,7 @@ impl WallpaperRenderState {
             output.wl_output,
             output_state,
             Some((unplugged.position_x, unplugged.position_y)),
+            unplugged.slowdown,
         );
     }
 
@@ -344,6 +348,7 @@ impl WallpaperRenderState {
             anim_start: Instant::now(),
             anim_duration: spring.duration(),
             anim: spring,
+            slowdown: self.slowdown,
         });
 
         if !is_already_scrolling {
@@ -359,7 +364,9 @@ impl WallpaperRenderState {
     fn calc_next_pos(&self) -> i32 {
         let scroll_state = self.scroll_state.as_ref().unwrap();
         let eclipsed_duration = Instant::now() - scroll_state.anim_start;
-        return scroll_state.anim.value_at(eclipsed_duration).round() as i32;
+        let seconds = eclipsed_duration.as_secs_f64() / scroll_state.slowdown;
+        let scaled_duration = Duration::from_secs_f64(seconds);
+        return scroll_state.anim.value_at(scaled_duration).round() as i32;
     }
 
     fn do_scroll_tick(&mut self, conn: &mut Connection<RenderThreadState>) {
@@ -429,6 +436,7 @@ pub struct ScrollState {
     pub anim_start: Instant,
     pub anim_duration: Duration, // only needed for LERP'd animations with fixed durations
     pub anim: Spring,
+    pub slowdown: f64,
 }
 
 impl ScrollState {
@@ -497,6 +505,7 @@ pub fn initialize_wallpaper_outputs(
             output.wl_output,
             output_state,
             None,
+            config.animation.slowdown.max(0.001),
         );
         output_state.render_state =
             Some(crate::wayland::render_base::OutputRenderStateVariety::Wallpaper(wallpaper_state));

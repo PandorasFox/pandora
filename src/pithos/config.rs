@@ -44,6 +44,7 @@ impl LogLevel {
 pub enum ConfigNode {
     Output(OutputConfig),
     Logging(#[knuffel(argument)] LogLevel),
+    Animation(AnimationConfig),
 }
 
 #[derive(Clone, Debug, knuffel::DecodeScalar, serde::Serialize, serde::Deserialize)]
@@ -97,11 +98,18 @@ pub struct WorkspaceConfig {
     pub trigger: Vec<ConfigTriggers>,
 }
 
+#[derive(Clone, Debug, Default, knuffel::Decode, serde::Serialize, serde::Deserialize)]
+pub struct AnimationConfig {
+    #[knuffel(child, unwrap(argument), default=1.0)]
+    pub slowdown: f64,
+}
+
 #[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
 pub struct DaemonConfig {
     pub outputs: Vec<OutputConfig>,
     // lockscreen: LockscreenConfig,
     pub log_level: LogLevel,
+    pub animation: AnimationConfig,
 }
 
 pub fn get_config_dir() -> PathBuf {
@@ -149,6 +157,7 @@ pub fn load_config() -> miette::Result<DaemonConfig> {
         }
     }
 
+
     let config_nodes = knuffel::parse::<Vec<ConfigNode>>(
         config_path.to_str().unwrap(),
         config_file_contents.clone().unwrap().as_str(),
@@ -157,6 +166,7 @@ pub fn load_config() -> miette::Result<DaemonConfig> {
     let mut config = DaemonConfig {
         outputs: Vec::new(),
         log_level: LogLevel::DEFAULT,
+        animation: AnimationConfig::default(),
     };
     for node in config_nodes {
         match node {
@@ -176,6 +186,7 @@ pub fn load_config() -> miette::Result<DaemonConfig> {
                 config.outputs.push(n)
             }
             ConfigNode::Logging(level) => config.log_level = level,
+            ConfigNode::Animation(animation) => config.animation = animation,
         }
     }
 
