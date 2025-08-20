@@ -1,5 +1,5 @@
 use crate::pithos::config::LogLevel;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 
@@ -28,11 +28,9 @@ impl LogThread {
     pub fn start(&self) {
         let spool_guard = self.spool.clone();
         let threshold = self.level.clone();
-        thread::spawn(move || {
-            match spool_guard.lock() {
-                Ok(spool) => LogThread::run(threshold, spool),
-                Err(e) => println!("LOGGER: failed to start logger: {e:?}"),
-            }
+        thread::spawn(move || match spool_guard.lock() {
+            Ok(spool) => LogThread::run(threshold, spool),
+            Err(e) => println!("LOGGER: failed to start logger: {e:?}"),
         });
     }
 

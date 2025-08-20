@@ -1,5 +1,5 @@
-use serde::{Serialize, Deserialize};
 use super::config::DaemonConfig;
+use serde::{Deserialize, Serialize};
 // ===== TRAITS AND MISC DATA STRUCTS =====
 #[derive(knuffel::DecodeScalar, Serialize, Deserialize, PartialEq, Copy, Clone, Debug)]
 pub enum RenderMode {
@@ -36,7 +36,7 @@ pub struct ModeCommand {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum CommandType {
     // commands for the daemon & other Forever Threads (outputs watcher, compositor agent)
-    Dc(DaemonCommand), 
+    Dc(DaemonCommand),
     // commands for a specific render thread, dispatched by output name
     Tc(RenderThreadCommand),
 }

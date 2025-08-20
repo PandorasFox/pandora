@@ -1,19 +1,39 @@
-use std::{cmp::Ordering, env, fs, path::{Path, PathBuf}, thread, time::Duration};
+use std::{
+    cmp::Ordering,
+    env, fs,
+    path::{Path, PathBuf},
+    thread,
+    time::Duration,
+};
 
 use super::commands::RenderMode;
 
-#[derive(Copy, Clone, Debug, Default)]
-#[derive(Eq, Ord, PartialEq, PartialOrd)]
-#[derive(knuffel::DecodeScalar, serde::Serialize, serde::Deserialize, clap::Parser, clap::ValueEnum)]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    Eq,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    knuffel::DecodeScalar,
+    serde::Serialize,
+    serde::Deserialize,
+    clap::Parser,
+    clap::ValueEnum,
+)]
 pub enum LogLevel {
-    #[default] DEFAULT = 0,
+    #[default]
+    DEFAULT = 0,
     VERBOSE = 1,
     DEBUG = 2,
 }
 
 impl LogLevel {
     pub fn check(&self, other: &LogLevel) -> bool {
-        if self.cmp(other) == Ordering::Equal { // easy case: accept messages of same threshold
+        if self.cmp(other) == Ordering::Equal {
+            // easy case: accept messages of same threshold
             return true;
         }
         return self.cmp(other) == Ordering::Greater; // if threshold is greater than incoming log level, allow
@@ -48,7 +68,7 @@ pub struct OutputConfig {
     // sub-items
     #[knuffel(child)]
     pub lockscreen: Option<LockConfig>,
-    #[knuffel(children(name="workspace"))]
+    #[knuffel(children(name = "workspace"))]
     pub workspaces: Option<Vec<WorkspaceConfig>>,
 }
 
@@ -100,7 +120,7 @@ fn try_load_file(path: &PathBuf) -> Option<String> {
         if path.exists() {
             match fs::read_to_string(path) {
                 Ok(s) => return Some(s),
-                Err(_) => ()
+                Err(_) => (),
             }
         }
         thread::sleep(Duration::from_millis(5));
@@ -115,37 +135,52 @@ pub fn load_config() -> miette::Result<DaemonConfig> {
     let config_path = config_dir.join("pandora.kdl");
     let config_file_contents = try_load_file(&config_path);
     if config_file_contents.is_none() {
-        return Err(miette::miette!("Could not load config file from fs (if editing with vim, try backupcopy yes)"));
+        return Err(miette::miette!(
+            "Could not load config file from fs (if editing with vim, try backupcopy yes)"
+        ));
     }
 
-    unsafe { // hot reloading config files while also debouncing the reloads is fucking annoying :/ 
+    unsafe {
+        // hot reloading config files while also debouncing the reloads is fucking annoying :/
         if LAST_CONFIG_FILE_CONTENTS == config_file_contents.clone().unwrap() {
-            return Err(miette::miette!("config file contents unchanged since last reload"));
+            return Err(miette::miette!(
+                "config file contents unchanged since last reload"
+            ));
         }
     }
 
-    let config_nodes = knuffel::parse::<Vec<ConfigNode>>(config_path.to_str().unwrap(), config_file_contents.clone().unwrap().as_str())?;
-    
-    let mut config = DaemonConfig { outputs: Vec::new(), log_level: LogLevel::DEFAULT };
+    let config_nodes = knuffel::parse::<Vec<ConfigNode>>(
+        config_path.to_str().unwrap(),
+        config_file_contents.clone().unwrap().as_str(),
+    )?;
+
+    let mut config = DaemonConfig {
+        outputs: Vec::new(),
+        log_level: LogLevel::DEFAULT,
+    };
     for node in config_nodes {
         match node {
             ConfigNode::Output(mut n) => {
                 n.image = shellexpand::full(&n.image).unwrap().to_string();
                 if n.workspaces.is_some() {
                     for wsc in n.workspaces.as_mut().unwrap() {
-                       wsc.image = shellexpand::full(&wsc.image).unwrap().to_string();
+                        wsc.image = shellexpand::full(&wsc.image).unwrap().to_string();
                     }
                 }
                 if n.lockscreen.is_some() {
-                    n.lockscreen.as_mut().unwrap().image = shellexpand::full(&n.lockscreen.as_ref().unwrap().image).unwrap().to_string();
+                    n.lockscreen.as_mut().unwrap().image =
+                        shellexpand::full(&n.lockscreen.as_ref().unwrap().image)
+                            .unwrap()
+                            .to_string();
                 }
                 config.outputs.push(n)
-            },
+            }
             ConfigNode::Logging(level) => config.log_level = level,
         }
     }
 
-    unsafe { // lol
+    unsafe {
+        // lol
         LAST_CONFIG_FILE_CONTENTS = config_file_contents.unwrap();
     }
     return Ok(config);

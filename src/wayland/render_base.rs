@@ -1,20 +1,23 @@
 use crate::daemon::Daemon;
 use crate::pithos::anims::spring::{Spring, SpringParams};
-use crate::pithos::commands::{RenderMode};
+use crate::pithos::commands::RenderMode;
 use crate::pithos::config::DaemonConfig;
 use crate::wayland::render_base::OutputRenderStateVariety::Wallpaper;
 
 use std::fs::File;
+use std::os::fd::OwnedFd;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
-use std::os::fd::OwnedFd;
 
 use wayrs_client::global::GlobalExt;
-use wayrs_client::{Connection, EventCtx, IoMode};
 use wayrs_client::protocol::wl_registry::{self, GlobalArgs};
-use wayrs_client::protocol::{WlBuffer, WlShm, wl_shm::Format, WlSurface, WlCallback, wl_output, WlOutput, WlCompositor, WlSubcompositor};
+use wayrs_client::protocol::{
+    WlBuffer, WlCallback, WlCompositor, WlOutput, WlShm, WlSubcompositor, WlSurface, wl_output,
+    wl_shm::Format,
+};
+use wayrs_client::{Connection, EventCtx, IoMode};
 use wayrs_protocols::viewporter::{WpViewport, WpViewporter};
-use wayrs_protocols::wlr_layer_shell_unstable_v1::{ZwlrLayerSurfaceV1};
+use wayrs_protocols::wlr_layer_shell_unstable_v1::ZwlrLayerSurfaceV1;
 
 // todo: split up into some smaller files perhaps
 
@@ -47,11 +50,12 @@ pub struct RenderThreadState {
 impl RenderThreadState {
     pub fn get_outputs(&mut self, conn: &mut Connection<RenderThreadState>) {
         let num_outputs = conn
-                .globals()
-                .iter()
-                .filter(|g| g.is::<WlOutput>())
-                .map(|g| g.clone())
-                .collect::<Vec<_>>().len();
+            .globals()
+            .iter()
+            .filter(|g| g.is::<WlOutput>())
+            .map(|g| g.clone())
+            .collect::<Vec<_>>()
+            .len();
 
         conn.add_registry_cb(wl_registry_cb);
         conn.blocking_roundtrip().unwrap();
@@ -79,7 +83,7 @@ impl RenderThreadState {
                         if wallpaper_render_state.scroll_state.is_some() {
                             return true;
                         }
-                    },
+                    }
                     //Lockscreen => (),
                 }
             }
@@ -92,9 +96,19 @@ impl RenderThreadState {
         // match against existing outputs
         // update their output state with the reusable unplugged state fields (image path, mode, ?position?, scroll state)
         for (output, output_state) in &mut self.outputs {
-            if let Some(idx) = self.detached_outputs.iter().position(|prior| prior.name == output_state.name) {
+            if let Some(idx) = self
+                .detached_outputs
+                .iter()
+                .position(|prior| prior.name == output_state.name)
+            {
                 let mut prior_state = self.detached_outputs.swap_remove(idx);
-                output_state.reseat(conn, output, &mut prior_state, self.pandora.clone(), self.globals);
+                output_state.reseat(
+                    conn,
+                    output,
+                    &mut prior_state,
+                    self.pandora.clone(),
+                    self.globals,
+                );
             }
         }
     }
@@ -110,10 +124,19 @@ pub struct OutputState {
 }
 
 impl OutputState {
-    pub fn reseat(&mut self, conn: &mut Connection<RenderThreadState>, new_output: &mut Output,  prior_state: &mut OutputState, weak: Weak<dyn Daemon>, globals: WaylandGlobals) {
+    pub fn reseat(
+        &mut self,
+        conn: &mut Connection<RenderThreadState>,
+        new_output: &mut Output,
+        prior_state: &mut OutputState,
+        weak: Weak<dyn Daemon>,
+        globals: WaylandGlobals,
+    ) {
         if let Some(kind) = &mut prior_state.render_state {
             let new_state = match kind {
-                Wallpaper(wp_state) => Wallpaper(WallpaperRenderState::from_prior(conn, weak, wp_state, new_output, self, globals)),
+                Wallpaper(wp_state) => Wallpaper(WallpaperRenderState::from_prior(
+                    conn, weak, wp_state, new_output, self, globals,
+                )),
             };
             self.render_state = Some(new_state);
         }
@@ -152,25 +175,49 @@ pub struct WallpaperRenderState {
 }
 
 impl WallpaperRenderState {
-    pub fn new(conn: &mut Connection<RenderThreadState>, globals: WaylandGlobals, weak: Weak<dyn Daemon>, image_path: &String, mode: RenderMode, wl_output: WlOutput, output_state: &OutputState, initial_pos: Option<(i32, i32)>) -> Self {
+    pub fn new(
+        conn: &mut Connection<RenderThreadState>,
+        globals: WaylandGlobals,
+        weak: Weak<dyn Daemon>,
+        image_path: &String,
+        mode: RenderMode,
+        wl_output: WlOutput,
+        output_state: &OutputState,
+        initial_pos: Option<(i32, i32)>,
+    ) -> Self {
         // create new buffer, load image into it, attach it to surface, apply role through daemon
         let pandora = weak.upgrade().unwrap();
         let surface = globals.compositor.create_surface(conn);
-        pandora.clone().apply_role_to_surface(conn, &surface, &wl_output, output_state);
+        pandora
+            .clone()
+            .apply_role_to_surface(conn, &surface, &wl_output, output_state);
         let file = tempfile::tempfile().expect("creating tempfile for shared mem failed");
-        
+
         let (scaled_width, scaled_height) = image_to_file(
-            pandora.clone(), &mode,
-            &file, image_path,
-            output_state.width as u32, output_state.height as u32,
+            pandora.clone(),
+            &mode,
+            &file,
+            image_path,
+            output_state.width as u32,
+            output_state.height as u32,
         );
         let bytes_per_row = scaled_width * 4;
         let total_bytes = bytes_per_row * scaled_height;
 
         // make a pool that consists of a single image. map that onto a single buffer.
         // not bothering to do one big pool with one big map and keeping track of byte offsets.
-        let pool = globals.shm.create_pool(conn, OwnedFd::from(file.try_clone().unwrap()), total_bytes);
-        let buf = pool.create_buffer(conn, 0, scaled_width, scaled_height, bytes_per_row, Format::Argb8888 );
+        let pool =
+            globals
+                .shm
+                .create_pool(conn, OwnedFd::from(file.try_clone().unwrap()), total_bytes);
+        let buf = pool.create_buffer(
+            conn,
+            0,
+            scaled_width,
+            scaled_height,
+            bytes_per_row,
+            Format::Argb8888,
+        );
         let viewport = globals.viewporter.get_viewport(conn, surface);
         let (position_x, position_y) = match initial_pos {
             Some((x, y)) => {
@@ -179,19 +226,19 @@ impl WallpaperRenderState {
                     RenderMode::ScrollVertical => {
                         if y + output_state.height <= scaled_height {
                             (0, y)
-                        }  else {
+                        } else {
                             eprintln!("foo {y} {} {scaled_height}", output_state.height);
                             // debug log here
                             (0, 0)
                         }
-                    },
+                    }
                     RenderMode::ScrollLateral => {
                         if x + output_state.width <= scaled_width {
                             (x, 0)
-                        }  else {
+                        } else {
                             // debug log here
                             (0, 0)
-                        }                    
+                        }
                     }
                 }
             }
@@ -199,7 +246,13 @@ impl WallpaperRenderState {
         };
 
         surface.attach(conn, Some(buf), 0, 0);
-        viewport.set_source(conn, position_x.into(), position_y.into(), output_state.width.into(), output_state.height.into());
+        viewport.set_source(
+            conn,
+            position_x.into(),
+            position_y.into(),
+            output_state.width.into(),
+            output_state.height.into(),
+        );
         surface.commit(conn);
         conn.blocking_roundtrip().unwrap();
         conn.flush(IoMode::Blocking).unwrap(); // can comment this out perhaps?
@@ -210,9 +263,12 @@ impl WallpaperRenderState {
             output_width: output_state.width,
             output_height: output_state.height,
             image: image_path.clone(),
-            image_width: scaled_width, image_height: scaled_height,
-            file, buffer: buf,
-            position_x, position_y,
+            image_width: scaled_width,
+            image_height: scaled_height,
+            file,
+            buffer: buf,
+            position_x,
+            position_y,
             scroll_state: None,
             mode: mode,
         };
@@ -225,8 +281,24 @@ impl WallpaperRenderState {
         conn.blocking_roundtrip().unwrap();
     }
 
-    pub fn from_prior(conn: &mut Connection<RenderThreadState>, weak: Weak<dyn Daemon>, unplugged: &mut WallpaperRenderState, output: &mut Output, output_state: &OutputState, globals: WaylandGlobals) -> Self {
-        return WallpaperRenderState::new(conn, globals, weak, &unplugged.image, unplugged.mode, output.wl_output, output_state, Some((unplugged.position_x, unplugged.position_y)));
+    pub fn from_prior(
+        conn: &mut Connection<RenderThreadState>,
+        weak: Weak<dyn Daemon>,
+        unplugged: &mut WallpaperRenderState,
+        output: &mut Output,
+        output_state: &OutputState,
+        globals: WaylandGlobals,
+    ) -> Self {
+        return WallpaperRenderState::new(
+            conn,
+            globals,
+            weak,
+            &unplugged.image,
+            unplugged.mode,
+            output.wl_output,
+            output_state,
+            Some((unplugged.position_x, unplugged.position_y)),
+        );
     }
 
     pub fn scroll(&mut self, conn: &mut Connection<RenderThreadState>, pos: i32) {
@@ -234,7 +306,7 @@ impl WallpaperRenderState {
         let current_pos = match self.mode {
             RenderMode::Static => return,
             RenderMode::ScrollVertical => {
-                if self.position_y == pos  {
+                if self.position_y == pos {
                     return;
                 }
                 let end_bound = self.output_height + pos;
@@ -244,7 +316,7 @@ impl WallpaperRenderState {
                     return;
                 }
                 self.position_y
-            },
+            }
             RenderMode::ScrollLateral => {
                 if self.position_x == pos {
                     return;
@@ -305,11 +377,7 @@ impl WallpaperRenderState {
         }
     }
 
-    fn scroll_to(
-        &mut self,
-        conn: &mut Connection<RenderThreadState>,
-        new_pos: i32,
-    ) {
+    fn scroll_to(&mut self, conn: &mut Connection<RenderThreadState>, new_pos: i32) {
         match self.mode {
             RenderMode::Static => {
                 return; // ???
@@ -317,14 +385,20 @@ impl WallpaperRenderState {
             RenderMode::ScrollVertical => {
                 self.position_x = 0;
                 self.position_y = new_pos;
-            },
+            }
             RenderMode::ScrollLateral => {
                 self.position_x = new_pos;
                 self.position_y = 0;
-            },
+            }
         };
         self.scroll_state.as_mut().unwrap().current_pos = new_pos;
-        self.viewport.set_source(conn, self.position_x.into(), self.position_y.into(), self.output_width.into(), self.output_height.into());
+        self.viewport.set_source(
+            conn,
+            self.position_x.into(),
+            self.position_y.into(),
+            self.output_width.into(),
+            self.output_height.into(),
+        );
         self.surface.commit(conn);
         conn.blocking_roundtrip().unwrap();
     }
@@ -340,7 +414,7 @@ fn frame_callback(ctx: EventCtx<RenderThreadState, WlCallback>) {
             match render_state {
                 OutputRenderStateVariety::Wallpaper(wallpaper_render_state) => {
                     wallpaper_render_state.do_scroll_tick(ctx.conn);
-                },
+                }
                 //OutputRenderStateVariety::Lockscreen => (),
             }
         }
@@ -384,17 +458,28 @@ impl WaylandGlobals {
             shm,
             compositor,
             subcompositor,
-            viewporter
+            viewporter,
         }
     }
 }
 
-pub fn initialize_wallpaper_outputs(conn: &mut Connection<RenderThreadState>, config: &DaemonConfig, state: &mut RenderThreadState) {
+pub fn initialize_wallpaper_outputs(
+    conn: &mut Connection<RenderThreadState>,
+    config: &DaemonConfig,
+    state: &mut RenderThreadState,
+) {
     for (output, output_state) in &mut state.outputs {
-        let output_config = match config.outputs.iter().find(|oc| oc.name == output_state.name) {
+        let output_config = match config
+            .outputs
+            .iter()
+            .find(|oc| oc.name == output_state.name)
+        {
             Some(c) => c,
             None => {
-                println!("output {} not found in configs; skipping", output_state.name);
+                println!(
+                    "output {} not found in configs; skipping",
+                    output_state.name
+                );
                 continue;
             }
         };
@@ -403,20 +488,29 @@ pub fn initialize_wallpaper_outputs(conn: &mut Connection<RenderThreadState>, co
             None => RenderMode::Static,
         };
 
-        let wallpaper_state = WallpaperRenderState::new(conn,
+        let wallpaper_state = WallpaperRenderState::new(
+            conn,
             state.globals,
             state.pandora.clone(),
             &output_config.image,
             mode,
             output.wl_output,
             output_state,
-            None
+            None,
         );
-        output_state.render_state = Some(crate::wayland::render_base::OutputRenderStateVariety::Wallpaper(wallpaper_state));
+        output_state.render_state =
+            Some(crate::wayland::render_base::OutputRenderStateVariety::Wallpaper(wallpaper_state));
     }
 }
 
-fn image_to_file(pandora: Arc<dyn Daemon>, mode: &RenderMode, f: &File, path: &String,  width: u32, height: u32) -> (i32, i32) {
+fn image_to_file(
+    pandora: Arc<dyn Daemon>,
+    mode: &RenderMode,
+    f: &File,
+    path: &String,
+    width: u32,
+    height: u32,
+) -> (i32, i32) {
     // enforcing a downscale to output_width at the 'load to buffer' stage is currently mandatory
     // so that the niri agent can reason better about viewport position upon scrolls and not the viewport scale
     // however, this makes re-initializing surfaces after an output mode change or output disconnect/reconnect
@@ -445,48 +539,70 @@ fn image_to_file(pandora: Arc<dyn Daemon>, mode: &RenderMode, f: &File, path: &S
         // TODO: better handling of this case
         // idealy coerce to static at runtime and just log
         // im lazy for now tho
-        panic!("image scaled to {img_width} x {img_height}, but output is {width} by {height}.\n   Try static mode for this image, as it's maybe insufficient for the desired mode :(")
+        panic!(
+            "image scaled to {img_width} x {img_height}, but output is {width} by {height}.\n   Try static mode for this image, as it's maybe insufficient for the desired mode :("
+        )
     }
-    pandora.clone().verbose("wallpaper", format!("file loaded and scaled to {img_width} x {img_height}"));
+    pandora.clone().verbose(
+        "wallpaper",
+        format!("file loaded and scaled to {img_width} x {img_height}"),
+    );
     return (img_width as i32, img_height as i32);
 }
 
-fn wl_registry_cb(conn: &mut Connection<RenderThreadState>, state: &mut RenderThreadState, event: &wl_registry::Event) {
+fn wl_registry_cb(
+    conn: &mut Connection<RenderThreadState>,
+    state: &mut RenderThreadState,
+    event: &wl_registry::Event,
+) {
     match event {
         wl_registry::Event::Global(global) if global.is::<WlOutput>() => {
             let output = Output::bind(conn, global);
-            match state.outputs.iter_mut().find(|(o, _)| o.wl_output == output.wl_output) {
+            match state
+                .outputs
+                .iter_mut()
+                .find(|(o, _)| o.wl_output == output.wl_output)
+            {
                 Some(_) => {
                     println!("BUG: output already in stack?");
-                },
+                }
                 None => {
                     //eprintln!("plug event: [{output:?}] [{event:?}]",);
                     state.outputs.push((output, OutputState::default()));
-                    state.try_reseat_outputs(conn); 
+                    state.try_reseat_outputs(conn);
                     // todo: investigate hitch? might be from image load?
                 }
             };
-        },
+        }
         wl_registry::Event::GlobalRemove(name) => {
             //eprintln!("remove event [{event:?}]");
-            if let Some(i) = state.outputs.iter().position(|(o, _)| o.registry_name == *name) {
+            if let Some(i) = state
+                .outputs
+                .iter()
+                .position(|(o, _)| o.registry_name == *name)
+            {
                 let (output, mut output_state) = state.outputs.swap_remove(i);
                 output.wl_output.release(conn);
                 output_state.yeet(conn);
                 state.detached_outputs.push(output_state);
             }
-        },
+        }
         _ => (),
     }
 }
 
 fn wl_output_cb(ctx: EventCtx<RenderThreadState, WlOutput>) {
     let outputs = &mut ctx.state.outputs;
-    let (output, output_state) = &mut outputs.iter_mut()
-        .find(|o| o.0.wl_output == ctx.proxy).unwrap();
+    let (output, output_state) = &mut outputs
+        .iter_mut()
+        .find(|o| o.0.wl_output == ctx.proxy)
+        .unwrap();
 
     if output.done {
-        println!("received event {:?} for output that's already .done - reseat?", ctx.event);
+        println!(
+            "received event {:?} for output that's already .done - reseat?",
+            ctx.event
+        );
         return;
     }
     match ctx.event {
@@ -497,7 +613,7 @@ fn wl_output_cb(ctx: EventCtx<RenderThreadState, WlOutput>) {
         wl_output::Event::Mode(mode) => {
             output_state.width = mode.width;
             output_state.height = mode.height;
-        },
+        }
         // wl_output::Event::Scale(scale) => output.scale = Some(scale), // maybe track this for lockscreen element scaling?
         wl_output::Event::Done => {
             output_state.done = true;
@@ -511,9 +627,11 @@ fn wl_output_cb(ctx: EventCtx<RenderThreadState, WlOutput>) {
 pub fn layer_shell_callback(mut ctx: EventCtx<RenderThreadState, ZwlrLayerSurfaceV1>) {
     let layer: ZwlrLayerSurfaceV1 = ctx.proxy;
     match ctx.event {
-        wayrs_protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::Event::Configure(args) => {
+        wayrs_protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::Event::Configure(
+            args,
+        ) => {
             layer.ack_configure(&mut ctx.conn, args.serial);
-        },
+        }
         _ => (),
     }
 }

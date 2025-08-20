@@ -5,9 +5,9 @@ pub struct CommandError {
 
 impl CommandError {
     pub fn new(s: &str) -> DaemonError {
-        return DaemonError::CommandError(CommandError{
-            response: s.to_string()
-        })
+        return DaemonError::CommandError(CommandError {
+            response: s.to_string(),
+        });
     }
 }
 

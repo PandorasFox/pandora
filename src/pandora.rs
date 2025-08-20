@@ -1,14 +1,14 @@
 use miette::Result;
 use pandora::daemon::Daemon;
-use pandora::pithos::config::{DaemonConfig, LogLevel};
-use pandora::pithos::misc::get_new_image_dimensions;
 use pandora::pithos::commands::{CommandType, DaemonCommand, RenderThreadCommand};
+use pandora::pithos::config::{DaemonConfig, LogLevel};
 use pandora::pithos::error::{CommandError, DaemonError};
-use pandora::threads::render::WallpaperThreadHandle;
+use pandora::pithos::misc::get_new_image_dimensions;
+use pandora::threads::Thread;
 use pandora::threads::config::ConfigWatcher;
 use pandora::threads::logger::LogThread;
 use pandora::threads::niri::NiriAgent;
-use pandora::threads::Thread;
+use pandora::threads::render::WallpaperThreadHandle;
 use pandora::wayland::render_base::{OutputState, RenderThreadState};
 
 use std::collections::HashMap;
@@ -18,11 +18,12 @@ use std::sync::{Arc, RwLock, Weak};
 use std::thread;
 
 use image::imageops::FilterType;
-use image::{RgbaImage, ImageReader};
+use image::{ImageReader, RgbaImage};
 use wayrs_client::Connection;
-use wayrs_client::protocol::{WlSurface, WlOutput};
-use wayrs_protocols::wlr_layer_shell_unstable_v1::{ZwlrLayerShellV1, zwlr_layer_surface_v1::Anchor, zwlr_layer_shell_v1::Layer};
-
+use wayrs_client::protocol::{WlOutput, WlSurface};
+use wayrs_protocols::wlr_layer_shell_unstable_v1::{
+    ZwlrLayerShellV1, zwlr_layer_shell_v1::Layer, zwlr_layer_surface_v1::Anchor,
+};
 
 #[derive(Clone)]
 pub struct Pandora {
@@ -51,22 +52,40 @@ impl Daemon for Pandora {
         self.logger.log(LogLevel::VERBOSE, name, msg);
     }
 
-    fn apply_role_to_surface(self: Arc<Self>, conn: &mut Connection<RenderThreadState>, wl_surface: &WlSurface, wl_output: &WlOutput, output_state: &OutputState) {
+    fn apply_role_to_surface(
+        self: Arc<Self>,
+        conn: &mut Connection<RenderThreadState>,
+        wl_surface: &WlSurface,
+        wl_output: &WlOutput,
+        output_state: &OutputState,
+    ) {
         let width = output_state.width;
         let height = output_state.height;
         let layer_shell = conn.bind_singleton::<ZwlrLayerShellV1>(4..=5).unwrap();
-        let layer_surface = layer_shell.get_layer_surface(conn, *wl_surface, Some(*wl_output), Layer::Background, CString::new("pandora").unwrap());
-                
+        let layer_surface = layer_shell.get_layer_surface(
+            conn,
+            *wl_surface,
+            Some(*wl_output),
+            Layer::Background,
+            CString::new("pandora").unwrap(),
+        );
+
         layer_surface.set_size(conn, width as u32, height as u32);
-        layer_surface.set_anchor(conn, Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right );
+        layer_surface.set_anchor(
+            conn,
+            Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right,
+        );
         layer_surface.set_exclusive_zone(conn, -1);
-                
-        conn.set_callback_for(layer_surface, pandora::wayland::render_base::layer_shell_callback);
+
+        conn.set_callback_for(
+            layer_surface,
+            pandora::wayland::render_base::layer_shell_callback,
+        );
         wl_surface.commit(conn);
         conn.blocking_roundtrip().unwrap();
     }
 
-    fn handle_cmd(self: Arc<Self>, cmd: &CommandType){
+    fn handle_cmd(self: Arc<Self>, cmd: &CommandType) {
         match cmd {
             CommandType::Dc(dc) => self.handle_daemon_command(&dc),
             // CommandType::Ac(ac) => {}
@@ -74,8 +93,9 @@ impl Daemon for Pandora {
         };
     }
 
-    fn load_image(self: Arc<Self>, path: &String) -> Result<(), DaemonError>  {
-        { // read lock
+    fn load_image(self: Arc<Self>, path: &String) -> Result<(), DaemonError> {
+        {
+            // read lock
             match self.images.read() {
                 Ok(images_check) => {
                     if images_check.contains_key(&path.clone()) {
@@ -86,11 +106,13 @@ impl Daemon for Pandora {
                 Err(e) => panic!("{e:?}"),
             }
         }
-        let img= ImageReader::open(path.clone())?.decode()?;
-        { //write lock
+        let img = ImageReader::open(path.clone())?.decode()?;
+        {
+            //write lock
             match self.images.write() {
                 Ok(mut images_table) => {
-                    if images_table.contains_key(&path.clone()) { // could have been written while we loaded the image!
+                    if images_table.contains_key(&path.clone()) {
+                        // could have been written while we loaded the image!
                         self.verbose("pandora", format!("file {} already loaded", path.clone()));
                         return Ok(());
                     }
@@ -112,14 +134,19 @@ impl Daemon for Pandora {
                 } else {
                     return Err(());
                 }
-            },
+            }
             Err(e) => panic!("{e:?}"),
         };
     }
 
     // if scale_to is provided, uses the provided width/height dimensions of the output to scale image appropriately
     // if only one dimension is provided, scales to that one and keeps aspect ratio.
-    fn read_img_to_file(self: Arc<Self>, img: &String, f: &File, scale_to: Option<(Option<u32>, Option<u32>)>) -> Result<(u32, u32), DaemonError> {
+    fn read_img_to_file(
+        self: Arc<Self>,
+        img: &String,
+        f: &File,
+        scale_to: Option<(Option<u32>, Option<u32>)>,
+    ) -> Result<(u32, u32), DaemonError> {
         let mut image = None;
         {
             let images = self.images.read()?;
@@ -133,18 +160,23 @@ impl Daemon for Pandora {
             let image = image.unwrap();
             match scale_to {
                 Some((maybe_width, maybe_height)) => {
-                    let (new_width, new_height) = get_new_image_dimensions(image.width(), image.height(), maybe_width, maybe_height);
+                    let (new_width, new_height) = get_new_image_dimensions(
+                        image.width(),
+                        image.height(),
+                        maybe_width,
+                        maybe_height,
+                    );
                     ::pandora::pithos::misc::img_into_buffer(
                         &image::imageops::resize(
-                        image,
-                        new_width as u32,
-                        new_height as u32,
-                        FilterType::Lanczos3,
+                            image,
+                            new_width as u32,
+                            new_height as u32,
+                            FilterType::Lanczos3,
                         ),
-                        &f
+                        &f,
                     );
                     return Ok((new_width, new_height));
-                },
+                }
                 None => {
                     ::pandora::pithos::misc::img_into_buffer(image, &f);
                     return Ok((image.width(), image.height()));
@@ -161,7 +193,11 @@ impl Pandora {
         let wallpaper = WallpaperThreadHandle::new();
         let niri = match ::pandora::threads::niri::NiriAgent::new(config.clone()) {
             Ok(agent) => Some(agent),
-            Err(_e) => /* log _e */ None,
+            Err(_e) =>
+            /* log _e */
+            {
+                None
+            }
         };
 
         return Arc::new(Pandora {
@@ -187,7 +223,10 @@ impl Pandora {
         };
 
         // main thread control flow loop
-        self.log("pandora", "startup completed; entering into ipc listen loop! :3".to_string());
+        self.log(
+            "pandora",
+            "startup completed; entering into ipc listen loop! :3".to_string(),
+        );
         ::pandora::threads::ipc::InboundCommandHandler::new().start(weak);
         Ok(())
     }
@@ -207,7 +246,12 @@ impl Pandora {
             Err(msg) => return self.log("pandora", msg),
             Ok(()) => (),
         };
-        let _ = self.niri_ag_thread.as_ref().unwrap().queue.send(DaemonCommand::ReloadConfig(config.clone()));
+        let _ = self
+            .niri_ag_thread
+            .as_ref()
+            .unwrap()
+            .queue
+            .send(DaemonCommand::ReloadConfig(config.clone()));
     }
 
     fn try_load_images(self: Arc<Pandora>, config: &DaemonConfig) -> Result<(), String> {
@@ -223,29 +267,29 @@ impl Pandora {
                 }
             }
         }
-        return Ok(())
+        return Ok(());
     }
 
     fn try_load_image(self: Arc<Pandora>, path: String) -> Result<(), String> {
         if fs::exists(&path.clone()).is_err() {
             return Err(format!("could not preload {path} during init"));
         }
-        thread::spawn(move|| self.load_image(&path));
-        return Ok(())
+        thread::spawn(move || self.load_image(&path));
+        return Ok(());
     }
 
     fn handle_daemon_command(self: Arc<Pandora>, dc: &DaemonCommand) {
         match dc {
             DaemonCommand::ReloadConfig(config) => {
                 self.reload_config(config);
-            },
+            }
             DaemonCommand::Stop => {
-                self.log("pandora","goodbye!".to_string());
+                self.log("pandora", "goodbye!".to_string());
                 std::process::exit(0);
-            },
+            }
             DaemonCommand::OutputModeChange(_) => {
                 let _ = self.niri_ag_thread.as_ref().unwrap().queue.send(dc.clone());
-            },
+            }
             DaemonCommand::Lock => self.lock(),
         };
     }
@@ -253,12 +297,17 @@ impl Pandora {
     fn lock(self: Arc<Pandora>) {
         {
             match self.config.read() {
-                Ok(conf) => pandora::threads::lockscreen::lock(self.logger.inbox.clone(), conf.clone()),
-                Err(_) => self.log("pandora", "locking screen failed: could not acquire config read-lock".to_string()),
+                Ok(conf) => {
+                    pandora::threads::lockscreen::lock(self.logger.inbox.clone(), conf.clone())
+                }
+                Err(_) => self.log(
+                    "pandora",
+                    "locking screen failed: could not acquire config read-lock".to_string(),
+                ),
             }
         }
     }
-    
+
     fn handle_thread_command(self: Arc<Pandora>, tc: &RenderThreadCommand) {
         let _ = self.bgwallp_thread.inbox.send(tc.clone());
     }
