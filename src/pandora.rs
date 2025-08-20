@@ -17,7 +17,6 @@ use std::fs::{self, File};
 use std::sync::{Arc, RwLock, Weak};
 use std::thread;
 
-use image::imageops::FilterType;
 use image::{ImageReader, RgbaImage};
 use wayrs_client::Connection;
 use wayrs_client::protocol::{WlOutput, WlSurface};
@@ -94,6 +93,7 @@ impl Daemon for Pandora {
     }
 
     fn load_image(self: Arc<Self>, path: &String) -> Result<(), DaemonError> {
+        let start = std::time::Instant::now();
         {
             // read lock
             match self.images.read() {
@@ -107,17 +107,37 @@ impl Daemon for Pandora {
             }
         }
         let img = ImageReader::open(path.clone())?.decode()?;
+        let img_loaded = std::time::Instant::now();
+        self.debug(
+            "pandora",
+            format!("image loaded in duration {:?}", img_loaded - start),
+        );
         {
             //write lock
             match self.images.write() {
                 Ok(mut images_table) => {
                     if images_table.contains_key(&path.clone()) {
                         // could have been written while we loaded the image!
-                        self.verbose("pandora", format!("file {} already loaded", path.clone()));
+                        self.verbose(
+                            "pandora",
+                            format!(
+                                "file {} already loaded (during read, but beaten to write)",
+                                path.clone()
+                            ),
+                        );
                         return Ok(());
                     }
                     images_table.insert(path.clone(), img.into_rgba8());
+                    let img_inserted = std::time::Instant::now();
                     self.log("pandora", format!("file {} loaded", path.clone()));
+                    self.debug(
+                        "pandora",
+                        format!(
+                            "image inserted into table in duration {:?} (cumulative for call: {:?}",
+                            img_inserted - img_loaded,
+                            img_inserted - start
+                        ),
+                    );
                     return Ok(());
                 }
                 Err(e) => panic!("{e:?}"),
@@ -139,49 +159,81 @@ impl Daemon for Pandora {
         };
     }
 
-    // if scale_to is provided, uses the provided width/height dimensions of the output to scale image appropriately
-    // if only one dimension is provided, scales to that one and keeps aspect ratio.
     fn read_img_to_file(
         self: Arc<Self>,
         img: &String,
         f: &File,
         scale_to: Option<(Option<u32>, Option<u32>)>,
     ) -> Result<(u32, u32), DaemonError> {
-        let mut image = None;
+        let start = std::time::Instant::now();
+
         {
             let images = self.images.read()?;
-            if images.contains_key(img) {
-                image = Some(images.get(img).unwrap());
-            }
-            if image.is_none() {
-                return Err(CommandError::new("invalid image (not loaded)"));
-            }
-
-            let image = image.unwrap();
-            match scale_to {
-                Some((maybe_width, maybe_height)) => {
-                    let (new_width, new_height) = get_new_image_dimensions(
+            if let Some(image) = images.get(img) {
+                let fetched = std::time::Instant::now();
+                let resize = match scale_to {
+                    Some((maybe_width, maybe_height)) => Some(get_new_image_dimensions(
                         image.width(),
                         image.height(),
                         maybe_width,
                         maybe_height,
-                    );
-                    ::pandora::pithos::misc::img_into_buffer(
-                        &image::imageops::resize(
+                    )),
+                    None => None,
+                };
+                match resize {
+                    None => {
+                        ::pandora::pithos::misc::img_into_buffer(image, &f);
+                        let put = std::time::Instant::now();
+                        self.debug(
+                            "image",
+                            format!(
+                                "image into buffer took [{:?}] (cumulative: {:?})",
+                                put - fetched,
+                                put - start
+                            ),
+                        );
+                        return Ok((image.width(), image.height()));
+                    }
+                    Some((new_width, new_height)) => {
+                        let resize_start = std::time::Instant::now();
+                        // this right here tends to take on the order of 5x as long as the load time
+                        // and 15~30x as long as the time to write into the buffer
+                        // (notably, the time to write into buffer *is* larger if we don't resize, obviously....)
+                        // ideally i think we want to find a faster resize option
+                        // and then switch to dmabufs?
+                        // also notably: imageops::resize does not use rayon in its implementation
+                        // the resize crate _will_, if i can Do It Right
+                        let rescaled = &image::imageops::resize(
                             image,
                             new_width as u32,
                             new_height as u32,
-                            FilterType::Lanczos3,
-                        ),
-                        &f,
-                    );
-                    return Ok((new_width, new_height));
+                            image::imageops::FilterType::Lanczos3,
+                        );
+                        let scaletime = std::time::Instant::now();
+                        self.debug(
+                            "image",
+                            format!(
+                                "image resize took [{:?}] (cumulative: {:?})",
+                                scaletime - resize_start,
+                                scaletime - start
+                            ),
+                        );
+                        ::pandora::pithos::misc::img_into_buffer(rescaled, &f);
+                        let put = std::time::Instant::now();
+                        self.debug(
+                            "image",
+                            format!(
+                                "image into buffer took [{:?}] (cumulative: {:?})",
+                                put - fetched,
+                                put - start
+                            ),
+                        );
+                        return Ok((new_width, new_height));
+                    }
                 }
-                None => {
-                    ::pandora::pithos::misc::img_into_buffer(image, &f);
-                    return Ok((image.width(), image.height()));
-                }
-            };
+            } else {
+                Err(CommandError::new("invalid image (not loaded)"))
+            }
         }
     }
 }
@@ -211,12 +263,8 @@ impl Pandora {
     }
 
     pub fn start(self: Arc<Self>, weak: Weak<Pandora>, config: DaemonConfig) -> miette::Result<()> {
-        match self.clone().try_load_images(&config) {
-            Err(msg) => return Err(miette::miette!(msg)),
-            Ok(()) => (),
-        };
+        self.bgwallp_thread.start(weak.clone(), config.clone());
         self.configw_thread.start(weak.clone());
-        self.bgwallp_thread.start(weak.clone(), config);
         match &self.niri_ag_thread {
             Some(niri) => niri.start(weak.clone()),
             None => self.log("pandora", "niri agent thread could not spawn!!".to_string()),
@@ -224,9 +272,13 @@ impl Pandora {
 
         // main thread control flow loop
         self.log(
-            "pandora",
-            "startup completed; entering into ipc listen loop! :3".to_string(),
+            "pandora :3",
+            "startup completed:".to_owned() /*lazy-loading remaining images in config & */ + "entering into ipc listen loop!",
         );
+        //match self.clone().try_load_images(&config) {
+        //    Err(msg) => return Err(miette::miette!(msg)),
+        //    Ok(()) => (),
+        //};
         ::pandora::threads::ipc::InboundCommandHandler::new().start(weak);
         Ok(())
     }
@@ -286,9 +338,6 @@ impl Pandora {
             DaemonCommand::Stop => {
                 self.log("pandora", "goodbye!".to_string());
                 std::process::exit(0);
-            }
-            DaemonCommand::OutputModeChange(_) => {
-                let _ = self.niri_ag_thread.as_ref().unwrap().queue.send(dc.clone());
             }
             DaemonCommand::Lock => self.lock(),
         };

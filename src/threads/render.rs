@@ -138,8 +138,7 @@ impl WallpaperThread {
             }
             RenderThreadCommand::Scroll(cmd) => {
                 self.scroll(conn, state, cmd);
-            }
-            // reload config :/
+            } // reload config :/
         }
     }
 
@@ -164,7 +163,7 @@ impl WallpaperThread {
         if let Some(OutputRenderStateVariety::Wallpaper(render_state)) =
             output_state.render_state.as_mut()
         {
-            render_state.scroll(conn, cmd.position);
+            render_state.scroll(conn, cmd.position_x, cmd.position_y);
         } else {
             self.debug("received scroll command, but no wallpaper state found on attached outputs. reseat pending/workspace change from output disconnect?".to_string());
         }

@@ -18,19 +18,17 @@ pub struct RenderCommand {
     pub output: String,
     pub image: String,
     pub mode: RenderMode,
+    pub position: (i32, i32),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ScrollCommand {
     pub output: String,
-    pub position: i32,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ModeCommand {
-    pub output: String,
-    pub new_width: i32,
-    pub new_height: i32,
+    // scroll position tracks the center of the viewport into the canvas
+    // e.g. 0% is top edge at top of screen, 100% is bottom edge at bottom of screen,
+    // 50% is center of screen is center of image
+    pub position_x: f64, // 0.0 => 100.0
+    pub position_y: f64, // 0.0 => 100.0
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -45,7 +43,6 @@ pub enum CommandType {
 pub enum DaemonCommand {
     Lock,
     ReloadConfig(DaemonConfig),
-    OutputModeChange(ModeCommand),
     Stop,
 }
 

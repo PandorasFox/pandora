@@ -1,13 +1,10 @@
 use crate::daemon::Daemon;
 use crate::pithos::commands::{
-    CommandType, DaemonCommand, ModeCommand, RenderCommand, RenderMode, RenderThreadCommand,
-    ScrollCommand,
+    CommandType, DaemonCommand, RenderCommand, RenderMode, RenderThreadCommand, ScrollCommand,
 };
 use crate::pithos::config::DaemonConfig;
-use crate::pithos::misc::get_new_image_dimensions;
 
 use std::collections::HashMap;
-use std::ops::Index;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, Weak};
 use std::thread;
@@ -92,12 +89,6 @@ fn run(
                     match channel.try_recv() {
                         Ok(cmd) => {
                             match cmd {
-                                DaemonCommand::OutputModeChange(new_mode) => {
-                                    // update state => reflow output
-                                    processor.update_mode(new_mode);
-                                    // not necessary once render reseat implementation is finished
-                                    processor.reseat_scroll_positions(pandora.clone());
-                                }
                                 DaemonCommand::ReloadConfig(config) => {
                                     if processor.update_config(config, pandora.clone()) {
                                         processor.reseat_scroll_positions(pandora.clone());
@@ -120,12 +111,12 @@ fn run(
 
 #[derive(Debug)]
 struct OutputState {
-    width: i32,
-    height: i32,
+    //width: i32,
+    //height: i32,
     // refresh: i32,
     _current_image: String,
-    _img_width: i32,
-    img_height: i32,
+    //_img_width: i32,
+    //img_height: i32,
     mode: Option<RenderMode>,
     max_workspace_idx: u8, // idx, name
 }
@@ -156,15 +147,10 @@ impl NiriProcessor {
                 Some(v) => v,
                 None => continue,
             };
-            // 🤮 im so sorry im so sorry 🤮
-            // this is without a doubt some of the grossest code ive written, all in the name of relatively seamless
-            // live config reloading for the end users...... they know not nor care not about my sins, probably
-            // next time any of this code needs any touching it *shall* be refactored into an UpdateState internal func
-            // that the other functions leverage sanely
             if state._current_image != new_output_conf.image
                 || state.mode.unwrap_or(RenderMode::Static) != new_mode
             {
-                // really hacky state updating in place. brittle. YEEHAW
+                /*
                 if p.clone()
                     .load_image(&new_output_conf.image.clone())
                     .is_err()
@@ -185,25 +171,24 @@ impl NiriProcessor {
                 {
                     Ok((w, h)) => (w, h),
                     Err(_) => unreachable!(), // LoadImage should've exploded
-                };
-
+                }
                 let (scale_width, scale_height) = match &new_mode {
                     RenderMode::Static => (Some(state.width as u32), Some(state.height as u32)),
                     RenderMode::ScrollVertical => (Some(state.width as u32), None),
                     RenderMode::ScrollLateral => (None, Some(state.height as u32)),
-                };
-
+                }
                 let (scaled_width, scaled_height) =
-                    get_new_image_dimensions(image_width, image_height, scale_width, scale_height);
-
+                    get_new_image_dimensions(image_width, image_height, scale_width, scale_height)
                 state._current_image = new_output_conf.image.clone();
                 state.mode = Some(new_mode);
                 state._img_width = scaled_width as i32;
                 state.img_height = scaled_height as i32;
+                */
                 let cmd = RenderCommand {
                     output: output_name.clone(),
                     image: new_output_conf.image.clone(),
                     mode: new_mode,
+                    position: (0, 0), // TODO LOL
                 };
                 p.handle_cmd(&CommandType::Tc(RenderThreadCommand::Render(cmd)));
                 mutated = true;
@@ -213,6 +198,7 @@ impl NiriProcessor {
         return mutated;
     }
 
+    /*
     fn update_mode(&mut self, new_mode: ModeCommand) {
         self.outputs
             .iter_mut()
@@ -223,6 +209,7 @@ impl NiriProcessor {
                 Some(o)
             });
     }
+    */
 
     fn update_workspaces(&mut self, workspaces: &Vec<Workspace>) {
         for workspace in workspaces {
@@ -253,37 +240,34 @@ impl NiriProcessor {
             };
 
             if output.current_mode.is_some() {
-                let mode_idx = output.current_mode.unwrap();
-                let mode = output.modes.index(mode_idx);
-                let (output_width, output_height) = (mode.width as u32, mode.height as u32);
-                let (scale_width, scale_height) = match &output_config.mode {
-                    None => (Some(output_width), Some(output_height)),
-                    Some(mode) => match mode {
-                        RenderMode::Static => (Some(output_width), Some(output_height)),
-                        RenderMode::ScrollVertical => (Some(output_width), None),
-                        RenderMode::ScrollLateral => (None, Some(output_height)),
-                    },
-                };
+                //let mode_idx = output.current_mode.unwrap();
+                //let mode = output.modes.index(mode_idx);
+                //let (output_width, output_height) = (mode.width as u32, mode.height as u32);
+                //let (scale_width, scale_height) = match &output_config.mode {
+                //    None => (Some(output_width), Some(output_height)),
+                //    Some(mode) => match mode {
+                //        RenderMode::Static => (Some(output_width), Some(output_height)),
+                //        RenderMode::ScrollVertical => (Some(output_width), None),
+                //        RenderMode::ScrollLateral => (None, Some(output_height)),
+                //    },
+                //};
 
                 let img_path = output_config.image.clone();
+                //pandora.clone().load_image(&img_path).unwrap(); // can explode on invalid images l0l
 
-                pandora.clone().load_image(&img_path).unwrap(); // can explode on invalid images l0l
+                //let (image_width, image_height) =
+                //    match pandora.clone().get_image_dimensions(img_path.clone()) {
+                //        Ok((w, h)) => (w, h),
+                //        Err(_) => unreachable!(), // LoadImage should've exploded
+                //    };
 
-                let (image_width, image_height) =
-                    match pandora.clone().get_image_dimensions(img_path.clone()) {
-                        Ok((w, h)) => (w, h),
-                        Err(_) => unreachable!(), // LoadImage should've exploded
-                    };
-
-                let (scaled_width, scaled_height) =
-                    get_new_image_dimensions(image_width, image_height, scale_width, scale_height);
+                //let (scaled_width, scaled_height) =
+                //    get_new_image_dimensions(image_width, image_height, scale_width, scale_height);
 
                 let output_state = OutputState {
-                    width: mode.width as i32,
-                    height: mode.height as i32,
                     _current_image: img_path,
-                    _img_width: scaled_width as i32,
-                    img_height: scaled_height as i32,
+                    //    _img_width: scaled_width as i32,
+                    //    img_height: scaled_height as i32,
                     mode: output_config.mode.clone(),
                     max_workspace_idx: 0,
                 };
@@ -343,21 +327,17 @@ impl NiriProcessor {
             None => None,
             Some(mode) => match mode {
                 RenderMode::ScrollVertical => {
-                    let last_scroll_pos = output.img_height - output.height;
-                    let first_scroll_pos = 0;
-                    // idx 1: 0, .... idx N: last_scroll_pos
-                    // scroll pos of idx x is ((last - first) / (N - 1)) * (x-1)
-                    // scroll dist should be min(that, output_height) so that if we have too few workspaces we scroll in a continuous manner
-                    let scroll_per_workspace = output.height.min(
-                        (last_scroll_pos - first_scroll_pos)
-                            / (output.max_workspace_idx - 1) as i32,
-                    );
-                    let pos = scroll_per_workspace * (curr_idx - 1) as i32;
+                    let mut scroll_percent =
+                        100.0 * (curr_idx - 1) as f64 / (output.max_workspace_idx - 1) as f64;
+                    if scroll_percent.is_nan() {
+                        // divided by zero because only one workspace on output
+                        scroll_percent = 50.0;
+                    }
                     let cmd = RenderThreadCommand::Scroll(ScrollCommand {
                         output: output_name,
-                        position: pos,
+                        position_x: 50.0,
+                        position_y: scroll_percent,
                     });
-                    pandora.debug("niri-agent", format!("idx: {curr_idx}, max: {} | scroll dist {scroll_per_workspace} to {pos} | img {} , output {}", output.max_workspace_idx, output.img_height, output.height));
                     Some(CommandType::Tc(cmd))
                 }
                 _ => None,

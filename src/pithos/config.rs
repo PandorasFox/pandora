@@ -100,7 +100,7 @@ pub struct WorkspaceConfig {
 
 #[derive(Clone, Debug, Default, knuffel::Decode, serde::Serialize, serde::Deserialize)]
 pub struct AnimationConfig {
-    #[knuffel(child, unwrap(argument), default=1.0)]
+    #[knuffel(child, unwrap(argument), default = 1.0)]
     pub slowdown: f64,
 }
 
@@ -156,7 +156,6 @@ pub fn load_config() -> miette::Result<DaemonConfig> {
             ));
         }
     }
-
 
     let config_nodes = knuffel::parse::<Vec<ConfigNode>>(
         config_path.to_str().unwrap(),
