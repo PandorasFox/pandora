@@ -172,7 +172,7 @@ pub struct WallpaperRenderState {
     pub position_x: i32,
     pub position_y: i32,
     pub scroll_state: Option<ScrollState>, // should be None'd once scroll is finished
-    pub slowdown: f64,
+    pub slowdown: f64, // must be updated whenever config reload percolates to render thread
 }
 
 impl WallpaperRenderState {
@@ -301,6 +301,7 @@ impl WallpaperRenderState {
             output.wl_output,
             output_state,
             Some((unplugged.position_x, unplugged.position_y)),
+            unplugged.slowdown,
         );
     }
 
