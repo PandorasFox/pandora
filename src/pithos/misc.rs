@@ -1,19 +1,25 @@
-use image::RgbaImage;
-use std::{fs::File, io::Write};
+use fast_image_resize::{images::Image, pixels::U8x4};
+use std::{fs::File, io::{BufWriter, Write}};
 
 use crate::pithos::commands::RenderMode;
 
-pub fn img_into_buffer(img: &RgbaImage, f: &File) {
+// fast-resized-image into a bufwriter to a file c: 
+pub fn img_into_buffer(img: &Image, buf: &mut BufWriter<&File>) {
     let start = std::time::Instant::now();
-    let mut buf = std::io::BufWriter::new(f);
-    // this could potentially be SIMD'd or otherwise accelerated, I think
-    // generally much less of a bottleneck than the imageops resize during load though, so fine for now.
     let loop_start = std::time::Instant::now();
-    for pixel in img.pixels() {
-        let (r, g, b, a) = (pixel.0[0], pixel.0[1], pixel.0[2], pixel.0[3]);
-        buf.write_all(&[b as u8, g as u8, r as u8, a as u8])
-            .unwrap();
+
+    match img.typed_image::<U8x4>() {
+        Some(typed) => {
+            for pixel in typed.pixels() {
+                let (r, g, b, a) = (pixel.0[0], pixel.0[1], pixel.0[2], pixel.0[3]);
+                buf.write_all(&[b as u8, g as u8, r as u8, a as u8]).unwrap();
+            }
+        },
+        None => {
+            panic!("image could not be coerced to U8x4");
+        }
     }
+
     let loop_end = std::time::Instant::now();
     buf.flush().unwrap();
     let call_end = std::time::Instant::now();

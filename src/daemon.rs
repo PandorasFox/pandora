@@ -21,7 +21,7 @@ pub trait Daemon {
         self: Arc<Self>,
         img: &String,
         f: &File,
-        scale_to: Option<(Option<u32>, Option<u32>)>,
+        scale_to: (Option<u32>, Option<u32>),
     ) -> Result<(u32, u32), DaemonError>;
 
     fn apply_role_to_surface(

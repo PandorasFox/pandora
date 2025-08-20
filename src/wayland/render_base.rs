@@ -652,9 +652,9 @@ fn image_to_file(
     height: u32,
 ) -> (i32, i32) {
     let scale_to = match mode {
-        RenderMode::Static => Some((Some(width), Some(height))),
-        RenderMode::ScrollVertical => Some((Some(width), None)),
-        RenderMode::ScrollLateral => Some((None, Some(height))),
+        RenderMode::Static => (Some(width), Some(height)),
+        RenderMode::ScrollVertical => (Some(width), None),
+        RenderMode::ScrollLateral => (None, Some(height)),
     };
 
     pandora.clone().load_image(path).unwrap();

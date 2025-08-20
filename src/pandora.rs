@@ -17,7 +17,9 @@ use std::fs::{self, File};
 use std::sync::{Arc, RwLock, Weak};
 use std::thread;
 
-use image::{ImageReader, RgbaImage};
+use fast_image_resize::{IntoImageView, Resizer};
+use fast_image_resize::images::Image;
+use image::{DynamicImage, ImageReader};
 use wayrs_client::Connection;
 use wayrs_client::protocol::{WlOutput, WlSurface};
 use wayrs_protocols::wlr_layer_shell_unstable_v1::{
@@ -33,7 +35,7 @@ pub struct Pandora {
     bgwallp_thread: Arc<WallpaperThreadHandle>,
     // key: file path
     // useful central cache of loaded images for lockscreen etc
-    images: Arc<RwLock<HashMap<String, RgbaImage>>>,
+    images: Arc<RwLock<HashMap<String, DynamicImage>>>,
     // agent: Arc<AgentHandler>,
     config: Arc<RwLock<DaemonConfig>>,
 }
@@ -110,14 +112,14 @@ impl Daemon for Pandora {
         let img_loaded = std::time::Instant::now();
         self.debug(
             "pandora",
-            format!("image loaded in duration {:?}", img_loaded - start),
+            format!("image loaded in {:?}", img_loaded - start),
         );
         {
             //write lock
             match self.images.write() {
                 Ok(mut images_table) => {
                     if images_table.contains_key(&path.clone()) {
-                        // could have been written while we loaded the image!
+                        // written while we loaded the image! try to eliminate this case as much as we can.
                         self.verbose(
                             "pandora",
                             format!(
@@ -127,13 +129,13 @@ impl Daemon for Pandora {
                         );
                         return Ok(());
                     }
-                    images_table.insert(path.clone(), img.into_rgba8());
+                    images_table.insert(path.clone(), img /*.into_rgba8() */);
                     let img_inserted = std::time::Instant::now();
                     self.log("pandora", format!("file {} loaded", path.clone()));
                     self.debug(
                         "pandora",
                         format!(
-                            "image inserted into table in duration {:?} (cumulative for call: {:?}",
+                            "image inserted into table in {:?} (cumulative for call: {:?}",
                             img_inserted - img_loaded,
                             img_inserted - start
                         ),
@@ -163,74 +165,47 @@ impl Daemon for Pandora {
         self: Arc<Self>,
         img: &String,
         f: &File,
-        scale_to: Option<(Option<u32>, Option<u32>)>,
+        scale_to: (Option<u32>, Option<u32>),
     ) -> Result<(u32, u32), DaemonError> {
         let start = std::time::Instant::now();
-
         {
             let images = self.images.read()?;
             if let Some(image) = images.get(img) {
                 let fetched = std::time::Instant::now();
-                let resize = match scale_to {
-                    Some((maybe_width, maybe_height)) => Some(get_new_image_dimensions(
-                        image.width(),
-                        image.height(),
-                        maybe_width,
-                        maybe_height,
-                    )),
-                    None => None,
-                };
-                match resize {
-                    None => {
-                        ::pandora::pithos::misc::img_into_buffer(image, &f);
-                        let put = std::time::Instant::now();
-                        self.debug(
-                            "image",
-                            format!(
-                                "image into buffer took [{:?}] (cumulative: {:?})",
-                                put - fetched,
-                                put - start
-                            ),
-                        );
-                        return Ok((image.width(), image.height()));
-                    }
-                    Some((new_width, new_height)) => {
-                        let resize_start = std::time::Instant::now();
-                        // this right here tends to take on the order of 5x as long as the load time
-                        // and 15~30x as long as the time to write into the buffer
-                        // (notably, the time to write into buffer *is* larger if we don't resize, obviously....)
-                        // ideally i think we want to find a faster resize option
-                        // and then switch to dmabufs?
-                        // also notably: imageops::resize does not use rayon in its implementation
-                        // the resize crate _will_, if i can Do It Right
-                        let rescaled = &image::imageops::resize(
-                            image,
-                            new_width as u32,
-                            new_height as u32,
-                            image::imageops::FilterType::Lanczos3,
-                        );
-                        let scaletime = std::time::Instant::now();
-                        self.debug(
-                            "image",
-                            format!(
-                                "image resize took [{:?}] (cumulative: {:?})",
-                                scaletime - resize_start,
-                                scaletime - start
-                            ),
-                        );
-                        ::pandora::pithos::misc::img_into_buffer(rescaled, &f);
-                        let put = std::time::Instant::now();
-                        self.debug(
-                            "image",
-                            format!(
-                                "image into buffer took [{:?}] (cumulative: {:?})",
-                                put - fetched,
-                                put - start
-                            ),
-                        );
-                        return Ok((new_width, new_height));
-                    }
-                }
+                let (new_width, new_height) = get_new_image_dimensions(
+                    image.width(),
+                    image.height(),
+                    scale_to.0,
+                    scale_to.1,
+                );
+            
+                let resize_start = std::time::Instant::now();
+                let mut dst_image =
+                    Image::new(new_width, new_height, image.pixel_type().unwrap());
+                let mut resizer = Resizer::new();
+                resizer.resize(image, &mut dst_image, None).unwrap();
+
+                let scaletime = std::time::Instant::now();
+                self.debug(
+                    "image",
+                    format!(
+                        "image resize took [{:?}] (cumulative: {:?})",
+                        scaletime - resize_start,
+                        scaletime - start
+                    ),
+                );
+                let mut buf = std::io::BufWriter::new(f);
+                ::pandora::pithos::misc::img_into_buffer(&dst_image, &mut buf);
+                let put = std::time::Instant::now();
+                self.debug(
+                    "image",
+                    format!(
+                        "image into buffer took [{:?}] (cumulative: {:?})",
+                        put - fetched,
+                        put - start
+                    ),
+                );
+                return Ok((new_width, new_height));
             } else {
                 Err(CommandError::new("invalid image (not loaded)"))
             }
@@ -257,7 +232,7 @@ impl Pandora {
             niri_ag_thread: niri,
             configw_thread: config_watcher,
             bgwallp_thread: wallpaper,
-            images: Arc::new(RwLock::new(HashMap::<String, RgbaImage>::new())),
+            images: Arc::new(RwLock::new(HashMap::<String, DynamicImage>::new())),
             config: Arc::new(RwLock::new(config)),
         });
     }
