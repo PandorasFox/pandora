@@ -11,6 +11,7 @@ pub struct InboundCommandHandler {
 }
 
 impl InboundCommandHandler {
+    // roll these into pandora proper?
     pub fn new() -> Arc<InboundCommandHandler> {
         let listen_addr = SocketAddr::from_abstract_name("pandora").expect(
             "could not construct linux named-socket address (sorry bsd?)");

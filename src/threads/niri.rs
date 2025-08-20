@@ -85,6 +85,7 @@ fn run(config: DaemonConfig, pandora: Arc<dyn Daemon + Send + Sync>, cmd_queue: 
                                 DaemonCommand::OutputModeChange(new_mode) => {
                                     // update state => reflow output
                                     processor.update_mode(new_mode);
+                                    // not necessary once render reseat implementation is finished
                                     processor.reseat_scroll_positions(pandora.clone());
                                 },
                                 DaemonCommand::ReloadConfig(config) => {

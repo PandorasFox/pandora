@@ -49,7 +49,7 @@ struct WallpaperThread {
 }
 
 impl WallpaperThread {
-    fn _log(&self, msg: String) {
+    fn log(&self, msg: String) {
         self.pandora.upgrade().unwrap().log("wallpaper", msg);
     }
     fn debug(&self, msg: String) {
@@ -63,11 +63,16 @@ impl WallpaperThread {
         let mut conn = Connection::<RenderThreadState>::connect().unwrap();
         let mut thread_state = RenderThreadState {
             outputs: Vec::new(),
+            detached_outputs: Vec::new(),
             globals: WaylandGlobals::new(&mut conn),
             pandora: self.pandora.clone(),
         };
+        self.verbose("getting initial output states".to_string());
         thread_state.get_outputs(&mut conn);
+        self.verbose("initializing wallpaper states".to_string());
+        // thought: peek at self.cmd_queue => pull initial scroll events, if any, for initial position state?
         crate::wayland::render_base::initialize_wallpaper_outputs(&mut conn, &self.config, &mut thread_state);
+        self.log("entering draw loop".to_string());
         self.draw_loop(&mut conn, &mut thread_state);
     }
 
@@ -86,8 +91,8 @@ impl WallpaperThread {
                         Ok(queue) =>
                             self.handle_cmd(conn, state, &queue.recv()
                                 .expect("thread exploded during blocking read on inbound commands")),
-                        Err(_e) => (),
-                            //state.pandora.debug("wallpaper", format!("{e:?}")),
+                        Err(e) => 
+                            return self.log(format!("{e:?}")),
                     }
                 }
             }
@@ -95,7 +100,6 @@ impl WallpaperThread {
     }
 
     fn handle_inbound_commands(&self, conn: &mut Connection<RenderThreadState>, state: &mut RenderThreadState) {
-        let pandora = self.pandora.upgrade().unwrap();
         match self.cmd_queue.lock() {
             Ok(queue) => loop {
                 match queue.try_recv() {
@@ -104,7 +108,7 @@ impl WallpaperThread {
                 }
             },
             Err(e) => 
-                return pandora.debug("wallpaper", format!("{e:?}")),
+                return self.log(format!("{e:?}")),
         }
     }
 
@@ -112,12 +116,14 @@ impl WallpaperThread {
         self.verbose(format!("command: {:?}", cmd));
         match cmd {
             RenderThreadCommand::Render(_) => {
+                // could just handle as discard old render_state & make new . . . with new scroll position? hmmmmmmm
                 //self.render(c, state).expect("error handling render command");
                 todo!();
             }
-            RenderThreadCommand::Scroll(c) => {
-                self.scroll(conn, state, c);
+            RenderThreadCommand::Scroll(cmd) => {
+                self.scroll(conn, state, cmd);
             },
+            // reload config :/
         }
     }
 
@@ -128,8 +134,10 @@ impl WallpaperThread {
             None => return self.debug("could not find output in state vec for scroll op".to_string()),
         };
 
-        if let OutputRenderStateVariety::Wallpaper(render_state) = output_state.render_state.as_mut().unwrap() {
+        if let Some(OutputRenderStateVariety::Wallpaper(render_state)) = output_state.render_state.as_mut() {
             render_state.scroll(conn, cmd.position);
+        } else {
+            self.debug("received scroll command, but no wallpaper state found on attached outputs. reseat pending/workspace change from output disconnect?".to_string());
         }
     }
 }
