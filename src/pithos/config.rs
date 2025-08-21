@@ -17,7 +17,7 @@ use super::commands::RenderMode;
     Ord,
     PartialEq,
     PartialOrd,
-    knuffel::DecodeScalar,
+    knus::DecodeScalar,
     serde::Serialize,
     serde::Deserialize,
     clap::Parser,
@@ -40,44 +40,44 @@ impl LogLevel {
     }
 }
 
-#[derive(Clone, Debug, knuffel::Decode, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, knus::Decode, serde::Serialize, serde::Deserialize)]
 pub enum ConfigNode {
     Output(OutputConfig),
-    Logging(#[knuffel(argument)] LogLevel),
+    Logging(#[knus(argument)] LogLevel),
     Animation(AnimationConfig),
 }
 
-#[derive(Clone, Debug, knuffel::DecodeScalar, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, knus::DecodeScalar, serde::Serialize, serde::Deserialize)]
 pub enum ConfigTriggers {
     Locked,
     WorkspaceName,
 }
 
-#[derive(Clone, Debug, knuffel::DecodeScalar, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, knus::DecodeScalar, serde::Serialize, serde::Deserialize)]
 pub enum LockRenderMode {
     Static,
 }
 
-#[derive(Clone, Debug, Default, knuffel::Decode, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, knus::Decode, serde::Serialize, serde::Deserialize)]
 pub struct OutputConfig {
-    #[knuffel(argument)]
+    #[knus(argument)]
     pub name: String,
-    #[knuffel(child, unwrap(argument))]
+    #[knus(child, unwrap(argument))]
     pub image: String,
-    #[knuffel(child, unwrap(argument))]
+    #[knus(child, unwrap(argument))]
     pub mode: Option<RenderMode>,
     // sub-items
-    #[knuffel(child)]
+    #[knus(child)]
     pub lockscreen: Option<LockConfig>,
-    #[knuffel(children(name = "workspace"))]
+    #[knus(children(name = "workspace"))]
     pub workspaces: Option<Vec<WorkspaceConfig>>,
 }
 
-#[derive(Clone, Debug, knuffel::Decode, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, knus::Decode, serde::Serialize, serde::Deserialize)]
 pub struct LockConfig {
-    #[knuffel(child, unwrap(argument))]
+    #[knus(child, unwrap(argument))]
     pub image: String,
-    #[knuffel(child, unwrap(argument))]
+    #[knus(child, unwrap(argument))]
     pub mode: Option<LockRenderMode>, // just 'static' for now, but I want to figure out some other funny eyecandy later
 }
 
@@ -86,21 +86,21 @@ pub struct LockConfig {
 ///     mode static
 ///     trigger "workspace name"
 /// }
-#[derive(Clone, Debug, knuffel::Decode, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, knus::Decode, serde::Serialize, serde::Deserialize)]
 pub struct WorkspaceConfig {
-    #[knuffel(argument)]
+    #[knus(argument)]
     pub name: String,
-    #[knuffel(child, unwrap(argument))]
+    #[knus(child, unwrap(argument))]
     pub image: String,
-    #[knuffel(child, unwrap(argument))]
+    #[knus(child, unwrap(argument))]
     pub mode: Option<RenderMode>,
-    #[knuffel(child, unwrap(arguments))]
+    #[knus(child, unwrap(arguments))]
     pub trigger: Vec<ConfigTriggers>,
 }
 
-#[derive(Clone, Debug, Default, knuffel::Decode, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, knus::Decode, serde::Serialize, serde::Deserialize)]
 pub struct AnimationConfig {
-    #[knuffel(child, unwrap(argument), default = 1.0)]
+    #[knus(child, unwrap(argument), default = 1.0)]
     pub slowdown: f64,
 }
 
@@ -156,7 +156,7 @@ pub fn load_config() -> miette::Result<DaemonConfig> {
         }
     }
 
-    let config_nodes = knuffel::parse::<Vec<ConfigNode>>(
+    let config_nodes = knus::parse::<Vec<ConfigNode>>(
         config_path.to_str().unwrap(),
         config_file_contents.clone().unwrap().as_str(),
     )?;

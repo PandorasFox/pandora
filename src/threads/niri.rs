@@ -85,22 +85,29 @@ fn run(
     let reply = socket.send(Request::EventStream).unwrap();
     if matches!(reply, Ok(Response::Handled)) {
         let mut read_event = socket.read_events();
-        while let Ok(event) = read_event() {
-            processor.process(pandora.clone(), event);
-            match cmd_queue.lock() {
-                Ok(channel) => {
-                    if let Ok(cmd) = channel.try_recv() {
-                        match cmd {
-                            DaemonCommand::ReloadConfig(config) => {
-                                if processor.update_config(config, pandora.clone()) {}
+        loop {
+            match read_event() {
+                Ok(event ) => {
+                    processor.process(pandora.clone(), event);
+                    match cmd_queue.lock() {
+                        Ok(channel) => {
+                            if let Ok(cmd) = channel.try_recv() {
+                                match cmd {
+                                    DaemonCommand::ReloadConfig(config) => {
+                                        processor.update_config(config, pandora.clone())
+                                    }
+                                    DaemonCommand::Lock => (), // i think ?
+                                    DaemonCommand::Stop => (),
+                                }
                             }
-                            DaemonCommand::Lock => (), // i think ?
-                            DaemonCommand::Stop => (),
+                        }
+                        Err(e) => {
+                            pandora.log("niri-agent", format!("error acquiring channel lock: {e:?}"));
                         }
                     }
-                }
+                },
                 Err(e) => {
-                    pandora.log("niri-agent", format!("error acquiring channel lock: {e:?}"));
+                    pandora.debug("niri-agent", format!("event read failed {e:?}"));
                 }
             }
         }
@@ -126,9 +133,7 @@ impl NiriProcessor {
         &mut self,
         new_config: DaemonConfig,
         pandora: Arc<dyn Daemon + Send + Sync>,
-    ) -> bool {
-        // this kinda sucks and i should really really rewrite it into an "update state" or something
-        let mut mutated = false;
+    ) {
         for new_output_conf in &new_config.outputs {
             let p = pandora.clone();
             let new_mode = new_output_conf.mode.unwrap_or(RenderMode::Static);
@@ -154,11 +159,9 @@ impl NiriProcessor {
                 // Update state to reflect the change
                 state.current_image = new_output_conf.image.clone();
                 state.mode = Some(new_mode);
-                mutated = true;
             }
         }
         self.config = new_config;
-        mutated
     }
 
     fn update_workspaces(&mut self, workspaces: &Vec<Workspace>) {
@@ -222,7 +225,12 @@ impl NiriProcessor {
                 self.gen_scroll_cmd_for_workspace_id(pandora, id)
             }
             Event::WindowFocusChanged { id: _ } => {
-                // TODO - i need to update my niri-ipc dep & implement this stuff soon
+                // TODO - niri includes tile layouts in WindowLayout structs now
+                // we should keep track of the full pixel width of each workspace,
+                // as well as the position of the focused window within that mosaic
+                // and compute a scroll percentage based on that
+                // we'll want to then start using that whenever we gen_scroll_cmd,
+                // and just trust the render thread to discard or use as needed.
             }
             _ => (), // idc about other events rn
         }
@@ -268,6 +276,7 @@ impl NiriProcessor {
             }
             Some(RenderMode::Static) => None,
         } {
+            pandora.verbose("niri-agent", format!("emitting command {cmd:?}"));
             pandora.handle_cmd(&cmd);
         }
     }

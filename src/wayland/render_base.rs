@@ -339,23 +339,24 @@ impl WallpaperRenderState {
             mode,
         );
 
-        let width_dim = ScrollDimension::new(
+        let width = ScrollDimension::new(
             output_state.width,
             image_width,
             viewport_width,
             scroll_percent_x,
         );
-        let height_dim = ScrollDimension::new(
+        let height = ScrollDimension::new(
             output_state.height,
             image_height,
             viewport_height,
             scroll_percent_y,
         );
 
-        let (viewport_x_start, viewport_width) = width_dim.compute_geometry();
-        let (viewport_y_start, viewport_height) = height_dim.compute_geometry();
+        let (viewport_x_start, viewport_width) = width.compute_geometry();
+        let (viewport_y_start, viewport_height) = height.compute_geometry();
 
         surface.attach(conn, Some(buf), 0, 0);
+        surface.damage(conn, 0, 0, width.output_dim, height.output_dim);
         viewport.set_destination(conn, output_state.width, output_state.height);
 
         viewport.set_source(
@@ -372,8 +373,8 @@ impl WallpaperRenderState {
         WallpaperRenderState {
             surface,
             viewport,
-            width: width_dim,
-            height: height_dim,
+            width,
+            height,
             image: image_path.to_string(),
             file,
             buffer: buf,

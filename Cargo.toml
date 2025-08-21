@@ -8,9 +8,9 @@ bytemuck = "1.23.1"
 clap = { version = "4.5.43", features = ["derive"] }
 image = "0.25.6"
 fast_image_resize = {version = "5.2.1", features = ["rayon", "image"]}
-knuffel = "3.2.0"
-miette = { version = "5.1.0", features = ["fancy"] }
-niri-ipc = "=25.5.1"
+knus = "3.3.1"
+miette = { version = "7.6.0", features = ["fancy"] }
+niri-ipc = { git = "https://github.com/YaLTeR/niri", version = "25.5.1" }
 notify = "8.2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.140"
