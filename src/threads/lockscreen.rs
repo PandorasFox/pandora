@@ -19,10 +19,10 @@ impl Cerberus {
     /* state: AgentState - drop the config, just ask agent for InitialLockscreenState? */
     /* maybe LockScreenConfig from agent. idk. we can replumb that when it's time. */
     fn new(log: Arc<Sender<(LogLevel, String)>>, config: DaemonConfig) -> Cerberus {
-        return Cerberus {
+        Cerberus {
             _logger: log,
             _config: config,
-        };
+        }
     }
 
     fn start(log: Arc<Sender<(LogLevel, String)>>, config: DaemonConfig) {

@@ -35,5 +35,5 @@ pub fn cli() -> Option<LogLevel> {
         );
         process::exit(0);
     }
-    return cli.log_level;
+    cli.log_level
 }

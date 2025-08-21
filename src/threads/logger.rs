@@ -22,12 +22,12 @@ impl LogThread {
             level: verbosity,
         });
         logger.start();
-        return logger;
+        logger
     }
 
     pub fn start(&self) {
         let spool_guard = self.spool.clone();
-        let threshold = self.level.clone();
+        let threshold = self.level;
         thread::spawn(move || match spool_guard.lock() {
             Ok(spool) => LogThread::run(threshold, spool),
             Err(e) => println!("LOGGER: failed to start logger: {e:?}"),
@@ -36,10 +36,10 @@ impl LogThread {
 
     fn run(threshold: LogLevel, spool: MutexGuard<Receiver<(LogLevel, String)>>) {
         loop {
-            if let Ok((level, msg)) = spool.recv() {
-                if threshold.check(&level) {
-                    println!("{msg}");
-                }
+            if let Ok((level, msg)) = spool.recv()
+                && threshold.check(&level)
+            {
+                println!("{msg}");
             }
         }
     }

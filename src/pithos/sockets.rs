@@ -20,7 +20,7 @@ pub fn write_command_to_daemon_socket(payload: &CommandType) -> Result<String, E
 
     socket.write_all(bytemuck::bytes_of::<usize>(&payload_length))?;
     socket.write_all(serialized.as_bytes())?;
-    return read_response_from_daemon_socket(&socket);
+    read_response_from_daemon_socket(&socket)
 }
 
 pub fn read_response_from_daemon_socket(mut socket: &UnixStream) -> Result<String, Error> {
@@ -34,7 +34,7 @@ pub fn read_response_from_daemon_socket(mut socket: &UnixStream) -> Result<Strin
         .read_exact(buf.as_mut_slice())
         .expect("could not read out payload");
 
-    return Ok(serde_json::from_slice(&buf).expect("could not deserialize payload"));
+    Ok(serde_json::from_slice(&buf).expect("could not deserialize payload"))
 }
 
 pub fn write_response_to_client_socket(
@@ -45,7 +45,7 @@ pub fn write_response_to_client_socket(
     let payload_length: usize = serialized.len();
 
     socket.write_all(bytemuck::bytes_of::<usize>(&payload_length))?;
-    return socket.write_all(serialized.as_bytes());
+    socket.write_all(serialized.as_bytes())
 }
 
 pub fn read_command_from_client_socket(mut socket: &UnixStream) -> CommandType {
@@ -59,5 +59,5 @@ pub fn read_command_from_client_socket(mut socket: &UnixStream) -> CommandType {
         .read_exact(buf.as_mut_slice())
         .expect("could not read out payload");
 
-    return serde_json::from_slice(&buf).expect("could not deserialize payload");
+    serde_json::from_slice(&buf).expect("could not deserialize payload")
 }

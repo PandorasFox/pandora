@@ -4,10 +4,10 @@ pub struct CommandError {
 }
 
 impl CommandError {
-    pub fn new(s: &str) -> DaemonError {
-        return DaemonError::CommandError(CommandError {
+    pub fn from_message(s: &str) -> DaemonError {
+        DaemonError::CommandError(CommandError {
             response: s.to_string(),
-        });
+        })
     }
 }
 

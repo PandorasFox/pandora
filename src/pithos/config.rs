@@ -26,8 +26,8 @@ use super::commands::RenderMode;
 pub enum LogLevel {
     #[default]
     DEFAULT = 0,
-    VERBOSE = 1,
-    DEBUG = 2,
+    DEBUG = 1,
+    VERBOSE = 2,
 }
 
 impl LogLevel {
@@ -36,7 +36,7 @@ impl LogLevel {
             // easy case: accept messages of same threshold
             return true;
         }
-        return self.cmp(other) == Ordering::Greater; // if threshold is greater than incoming log level, allow
+        self.cmp(other) == Ordering::Greater // if threshold is greater than incoming log level, allow
     }
 }
 
@@ -117,7 +117,7 @@ pub fn get_config_dir() -> PathBuf {
         Ok(s) => shellexpand::full(&s).unwrap().into_owned(),
         Err(_) => shellexpand::full("~/.config").unwrap().into_owned(),
     };
-    return Path::new(&base_dir).join("pandora");
+    Path::new(&base_dir).join("pandora")
 }
 
 fn try_load_file(path: &PathBuf) -> Option<String> {
@@ -125,11 +125,10 @@ fn try_load_file(path: &PathBuf) -> Option<String> {
     // this lead to weird race conditions. we fight this by doing a few fs::exists and and read attempts in a row
     // with some micro sleeps between attempts. miette! if we fail a few times in a row.
     for _ in 1..3 {
-        if path.exists() {
-            match fs::read_to_string(path) {
-                Ok(s) => return Some(s),
-                Err(_) => (),
-            }
+        if path.exists()
+            && let Ok(s) = fs::read_to_string(path)
+        {
+            return Some(s);
         }
         thread::sleep(Duration::from_millis(5));
     }
@@ -193,5 +192,5 @@ pub fn load_config() -> miette::Result<DaemonConfig> {
         // lol
         LAST_CONFIG_FILE_CONTENTS = config_file_contents.unwrap();
     }
-    return Ok(config);
+    Ok(config)
 }

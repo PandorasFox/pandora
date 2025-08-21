@@ -18,14 +18,14 @@ impl InboundCommandHandler {
         let socket = UnixListener::bind_addr(&listen_addr)
             .expect("failed to bind to named socket (already running?)");
 
-        return Arc::new(InboundCommandHandler {
+        Arc::new(InboundCommandHandler {
             listener: Arc::new(socket),
-        });
+        })
     }
 
     pub fn start(&self, pandora: Weak<dyn Daemon + Send + Sync>) {
         for connection in self.listener.incoming() {
-            let p = pandora.upgrade().take().unwrap();
+            let p = pandora.upgrade().unwrap();
             thread::spawn(move || {
                 let socket = connection.unwrap();
                 let cmd = crate::pithos::sockets::read_command_from_client_socket(&socket);

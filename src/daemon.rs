@@ -15,11 +15,11 @@ pub trait Daemon {
 
     fn handle_cmd(self: Arc<Self>, cmd: &CommandType);
 
-    fn load_image(self: Arc<Self>, path: &String) -> Result<(), DaemonError>;
-    fn get_image_dimensions(self: Arc<Self>, img: String) -> Result<(u32, u32), ()>;
+    fn load_image(self: Arc<Self>, path: &str) -> Result<(), DaemonError>;
+    fn get_image_dimensions(self: Arc<Self>, img: &str) -> Result<(u32, u32), DaemonError>;
     fn read_img_to_file(
         self: Arc<Self>,
-        img: &String,
+        img: &str,
         f: &File,
         scale_to: (Option<u32>, Option<u32>),
     ) -> Result<(u32, u32), DaemonError>;

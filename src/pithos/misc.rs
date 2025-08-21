@@ -1,9 +1,12 @@
 use fast_image_resize::{images::Image, pixels::U8x4};
-use std::{fs::File, io::{BufWriter, Write}};
+use std::{
+    fs::File,
+    io::{BufWriter, Write},
+};
 
 use crate::pithos::commands::RenderMode;
 
-// fast-resized-image into a bufwriter to a file c: 
+// fast-resized-image into a bufwriter to a file c:
 pub fn img_into_buffer(img: &Image, buf: &mut BufWriter<&File>) {
     let start = std::time::Instant::now();
     let loop_start = std::time::Instant::now();
@@ -12,9 +15,9 @@ pub fn img_into_buffer(img: &Image, buf: &mut BufWriter<&File>) {
         Some(typed) => {
             for pixel in typed.pixels() {
                 let (r, g, b, a) = (pixel.0[0], pixel.0[1], pixel.0[2], pixel.0[3]);
-                buf.write_all(&[b as u8, g as u8, r as u8, a as u8]).unwrap();
+                buf.write_all(&[b, g, r, a]).unwrap();
             }
-        },
+        }
         None => {
             panic!("image could not be coerced to U8x4");
         }
@@ -49,11 +52,11 @@ pub fn compute_viewport_range(
     let end = image_dimension as f64 - half_viewport;
     // can be equal: viewport_dimension == image_dimension
     assert!(start <= end);
-    let viewport_offset = (end - start) as f64 * scroll_percentage / 100.0;
-    return (
+    let viewport_offset = (end - start) * scroll_percentage / 100.0;
+    (
         start + viewport_offset - half_viewport,
         start + viewport_offset + half_viewport,
-    );
+    )
 }
 
 // for when we wanna rescale an image down to fit a given dimension
@@ -79,12 +82,12 @@ pub fn get_new_image_dimensions(
                 canvas_height as f64 / orig_height as f64,
             )
         }
-        (None, None) => 1 as f64,
+        (None, None) => 1_f64,
     };
-    return (
+    (
         (orig_width as f64 * scale_factor).round() as u32,
         (orig_height as f64 * scale_factor).round() as u32,
-    );
+    )
 }
 
 // this implicity enforces viewport "source rectangle" width/height as an inherent property of the
@@ -104,7 +107,7 @@ pub fn get_viewport_dimensions(
     // we pick the min ratio of (image/output) for width | height, & multiply the other output dimension by it (and return the other image dimension)
     let width_ratio = image_width as f64 / output_width as f64;
     let height_ratio = image_height as f64 / output_height as f64;
-    return match mode {
+    match mode {
         RenderMode::Static => {
             // 3440,1440 and 4000,1200
             // we _want_ to do a height of 1200 and a width of (less than 3440)
@@ -135,7 +138,7 @@ pub fn get_viewport_dimensions(
             let viewport_height = image_height;
             (viewport_width, viewport_height)
         }
-    };
+    }
 }
 
 // i used claude pro to generate these tests, with some nudging about what the expectations were.

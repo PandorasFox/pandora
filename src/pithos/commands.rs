@@ -18,7 +18,7 @@ pub struct RenderCommand {
     pub output: String,
     pub image: String,
     pub mode: RenderMode,
-    pub position: (i32, i32),
+    pub position: (f64, f64),
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -50,4 +50,5 @@ pub enum DaemonCommand {
 pub enum RenderThreadCommand {
     Render(RenderCommand),
     Scroll(ScrollCommand),
+    ConfigReload(DaemonConfig),
 }

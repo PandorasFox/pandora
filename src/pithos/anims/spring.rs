@@ -34,8 +34,11 @@ impl SpringParams {
             epsilon,
         }
     }
-    pub fn default() -> Self {
-        return SpringParams::new(1.0, 1000.0, 0.0001);
+}
+
+impl Default for SpringParams {
+    fn default() -> Self {
+        SpringParams::new(1.0, 1000.0, 0.0001)
     }
 }
 

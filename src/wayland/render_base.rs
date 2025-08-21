@@ -1,10 +1,11 @@
 use crate::daemon::Daemon;
-use crate::pithos::anims::spring::{Spring, SpringParams};
+use crate::pithos::anims::spring::Spring;
 use crate::pithos::commands::RenderMode;
 use crate::pithos::config::DaemonConfig;
-use crate::pithos::misc::{compute_viewport_range, get_viewport_dimensions};
+use crate::pithos::misc::get_viewport_dimensions;
 use crate::wayland::render_base::OutputRenderStateVariety::Wallpaper;
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::os::fd::OwnedFd;
 use std::sync::{Arc, Weak};
@@ -20,7 +21,9 @@ use wayrs_client::{Connection, EventCtx, IoMode};
 use wayrs_protocols::viewporter::{WpViewport, WpViewporter};
 use wayrs_protocols::wlr_layer_shell_unstable_v1::ZwlrLayerSurfaceV1;
 
-// todo: split up into some smaller files perhaps
+fn verbose(pandora: Arc<dyn Daemon>, msg: &str) {
+    pandora.verbose("render", msg.to_string())
+}
 
 #[derive(Debug)]
 pub struct Output {
@@ -39,6 +42,10 @@ impl Output {
             done: false,
         }
     }
+
+    pub fn wl_output(&self) -> WlOutput {
+        self.wl_output
+    }
 }
 
 pub struct RenderThreadState {
@@ -54,7 +61,7 @@ impl RenderThreadState {
             .globals()
             .iter()
             .filter(|g| g.is::<WlOutput>())
-            .map(|g| g.clone())
+            .cloned()
             .collect::<Vec<_>>()
             .len();
 
@@ -81,17 +88,17 @@ impl RenderThreadState {
             if let Some(render_state) = &output_state.render_state {
                 match render_state {
                     Wallpaper(wallpaper_render_state) => {
-                        if wallpaper_render_state.scroll_state_x.is_some() {
+                        if wallpaper_render_state.width.scroll_state.is_some() {
                             return true;
                         }
-                        if wallpaper_render_state.scroll_state_y.is_some() {
+                        if wallpaper_render_state.height.scroll_state.is_some() {
                             return true;
                         }
                     } //Lockscreen => (),
                 }
             }
         }
-        return false;
+        false
     }
 
     pub fn try_reseat_outputs(&mut self, conn: &mut Connection<RenderThreadState>) {
@@ -159,36 +166,126 @@ pub enum OutputRenderStateVariety {
     //Lockscreen,
 }
 
+#[derive(Copy, Clone)]
+pub struct ScrollDimension {
+    pub output_dim: i32,                   // output width or height
+    pub image_dim: i32,                    // image width or height
+    pub viewport_dim: f64,                 // calculated viewport width or height
+    pub scroll_percent: f64,               // 0.0 => 100.0
+    pub scroll_state: Option<ScrollState>, // should be None'd once scroll is finished
+}
+
+impl ScrollDimension {
+    pub fn new(output_dim: i32, image_dim: i32, viewport_dim: i32, scroll_percent: f64) -> Self {
+        Self {
+            output_dim,
+            image_dim,
+            viewport_dim: viewport_dim as f64,
+            scroll_percent,
+            scroll_state: None,
+        }
+    }
+
+    pub fn compute_viewport_range(&self) -> (f64, f64) {
+        crate::pithos::misc::compute_viewport_range(
+            self.image_dim,
+            self.viewport_dim as i32,
+            self.scroll_percent,
+        )
+    }
+
+    pub fn compute_viewport_range_with_scroll(&self, scroll_percent: f64) -> (f64, f64) {
+        crate::pithos::misc::compute_viewport_range(
+            self.image_dim,
+            self.viewport_dim as i32,
+            scroll_percent,
+        )
+    }
+
+    pub fn compute_geometry(&self) -> (f64, f64) {
+        let (viewport_start, viewport_end) = self.compute_viewport_range();
+        (viewport_start, viewport_end - viewport_start)
+    }
+
+    pub fn compute_geometry_with_scroll(&self, scroll_percent: f64) -> (f64, f64) {
+        let (viewport_start, viewport_end) =
+            self.compute_viewport_range_with_scroll(scroll_percent);
+        (viewport_start, viewport_end - viewport_start)
+    }
+
+    pub fn calc_current_position(&self) -> f64 {
+        if let Some(scroll_state) = self.scroll_state {
+            let eclipsed_duration = std::time::Instant::now() - scroll_state.anim_start;
+            let seconds = eclipsed_duration.as_secs_f64() / scroll_state.slowdown;
+            let scaled_duration = std::time::Duration::from_secs_f64(seconds);
+            scroll_state.anim.value_at(scaled_duration).round()
+        } else {
+            let (viewport_start, _) = self.compute_geometry();
+            viewport_start
+        }
+    }
+
+    pub fn scroll(&mut self, scroll_percent: f64, slowdown: f64) {
+        let (start_position, _) = self.compute_geometry_with_scroll(scroll_percent);
+        self.update_scroll_animation(start_position, scroll_percent, slowdown);
+    }
+
+    pub fn update_scroll_animation(&mut self, target_pos: f64, scroll_percent: f64, slowdown: f64) {
+        let current_pos = self.calc_current_position();
+        self.scroll_percent = scroll_percent;
+
+        match &mut self.scroll_state {
+            Some(state) => {
+                state.start_pos = current_pos;
+                state.anim.from = current_pos;
+                state.end_pos = target_pos;
+                state.anim.to = target_pos;
+                state.anim_start = std::time::Instant::now();
+                state.anim_duration = state.anim.duration();
+            }
+            None => {
+                let spring = crate::pithos::anims::spring::Spring {
+                    from: current_pos,
+                    to: target_pos,
+                    initial_velocity: 0.0,
+                    params: crate::pithos::anims::spring::SpringParams::default(),
+                };
+
+                self.scroll_state = Some(ScrollState {
+                    start_pos: current_pos,
+                    current_pos,
+                    end_pos: target_pos,
+                    anim_start: std::time::Instant::now(),
+                    anim_duration: spring.duration(),
+                    anim: spring,
+                    slowdown,
+                });
+            }
+        }
+    }
+}
+
 pub struct WallpaperRenderState {
     // un-rust-y: Wayland-y objects can be destroyed & be invalid references for use after output removal => buffer freeing
     // should refactor them to be Option<>s, .take() on destroy?
-    // scroll state is getting gross, but it needs.... a lot of these values, so, idk.
-    // ScrollDimension(output, image, scroll_percent, viewport_x, viewport_size) ?
-    // hmmmm.
-    // Would Be Good lol
     pub surface: WlSurface,
     pub viewport: WpViewport,
-    pub output_width: i32,
-    pub output_height: i32,
+    pub width: ScrollDimension,
+    pub height: ScrollDimension,
     pub image: String,
     pub file: File,
     pub buffer: WlBuffer,
-    pub image_width: i32,
-    pub image_height: i32,
     pub mode: RenderMode,
-    pub scroll_percent_x: f64, // 0.0 => 100.0
-    pub scroll_percent_y: f64,
-    pub scroll_state_x: Option<ScrollState>, // should be None'd once scroll is finished
-    pub scroll_state_y: Option<ScrollState>, // should be None'd once scroll is finished
     pub slowdown: f64, // must be updated whenever config reload percolates to render thread
 }
 
 impl WallpaperRenderState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         conn: &mut Connection<RenderThreadState>,
         globals: WaylandGlobals,
         weak: Weak<dyn Daemon>,
-        image_path: &String,
+        image_path: &str,
         mode: RenderMode,
         wl_output: WlOutput,
         output_state: &OutputState,
@@ -241,12 +338,22 @@ impl WallpaperRenderState {
             output_state.height,
             mode,
         );
-        let (viewport_x_start, viewport_x_end) =
-            compute_viewport_range(image_width, viewport_width, scroll_percent_x);
-        let (viewport_y_start, viewport_y_end) =
-            compute_viewport_range(image_height, viewport_height, scroll_percent_y);
-        let viewport_width = viewport_x_end - viewport_x_start;
-        let viewport_height = viewport_y_end - viewport_y_start;
+
+        let width_dim = ScrollDimension::new(
+            output_state.width,
+            image_width,
+            viewport_width,
+            scroll_percent_x,
+        );
+        let height_dim = ScrollDimension::new(
+            output_state.height,
+            image_height,
+            viewport_height,
+            scroll_percent_y,
+        );
+
+        let (viewport_x_start, viewport_width) = width_dim.compute_geometry();
+        let (viewport_y_start, viewport_height) = height_dim.compute_geometry();
 
         surface.attach(conn, Some(buf), 0, 0);
         viewport.set_destination(conn, output_state.width, output_state.height);
@@ -262,23 +369,17 @@ impl WallpaperRenderState {
         conn.blocking_roundtrip().unwrap();
         conn.flush(IoMode::Blocking).unwrap(); // can comment this out perhaps?
 
-        return WallpaperRenderState {
+        WallpaperRenderState {
             surface,
             viewport,
-            output_width: output_state.width,
-            output_height: output_state.height,
-            image: image_path.clone(),
-            image_width: image_width,
-            image_height: image_height,
+            width: width_dim,
+            height: height_dim,
+            image: image_path.to_string(),
             file,
             buffer: buf,
-            scroll_percent_x,
-            scroll_percent_y,
-            scroll_state_x: None,
-            scroll_state_y: None,
-            mode: mode,
+            mode,
             slowdown,
-        };
+        }
     }
 
     pub fn yeet(&self, conn: &mut Connection<RenderThreadState>) {
@@ -297,7 +398,7 @@ impl WallpaperRenderState {
         globals: WaylandGlobals,
     ) -> Self {
         // todo: file reuse from unplugged
-        return WallpaperRenderState::new(
+        WallpaperRenderState::new(
             conn,
             globals,
             weak,
@@ -305,9 +406,12 @@ impl WallpaperRenderState {
             unplugged.mode,
             output.wl_output,
             output_state,
-            Some((unplugged.scroll_percent_x, unplugged.scroll_percent_y)),
+            Some((
+                unplugged.width.scroll_percent,
+                unplugged.height.scroll_percent,
+            )),
             unplugged.slowdown,
-        );
+        )
     }
 
     pub fn scroll(
@@ -318,115 +422,131 @@ impl WallpaperRenderState {
     ) {
         // scroll (x|y) track the % (0.0 => 100.0) of the center of the viewport along each dimension
         // e.g. 0.0 scroll_x is left-aligned, 100.0 is right aligned, and 50.0 has the viewport centered
-        let (viewport_width, viewport_height) = get_viewport_dimensions(
-            self.image_width,
-            self.image_height,
-            self.output_width,
-            self.output_height,
-            self.mode,
-        );
-        let is_already_scrolling = self.scroll_state_x.is_some() || self.scroll_state_y.is_some();
-
-        // match on mode:
-        // - if vertical, we use scroll_y, scroll_x is ignored (50.0 because centered & fill)
-        // - if lateral, use scroll_x, scroll_y is ignored
-        // - if static, RETURN!
-        // - if full scroll, TODO :)
-        //
-        // we need to convert the given scroll % into a viewport start value, then:
-        // update existing scroll state if we have one,
-        // or calc_scroll_pos for that dim => compare => return if NOP => set state and finish otherwise
-
-        let (viewport_x, viewport_y) = match self.mode {
-            RenderMode::Static => return,
-            RenderMode::ScrollVertical => {
-                let (start_y, _end_y) =
-                    compute_viewport_range(self.image_height, viewport_height, scroll_y);
-                (0.0, start_y)
-            }
-            RenderMode::ScrollLateral => {
-                let (start_x, _end_x) =
-                    compute_viewport_range(self.image_width, viewport_width, scroll_x);
-                (start_x, 0.0)
-            }
-        };
-
-        // TODO: determine why multi-scroll interrupts weird style
+        let is_already_scrolling =
+            self.width.scroll_state.is_some() || self.height.scroll_state.is_some();
 
         match self.mode {
-            RenderMode::Static => (),
-            RenderMode::ScrollVertical => {
-                let current_pos: f64 = self.calc_pos_y(); // :)
-                match &mut self.scroll_state_y {
-                    Some(state) => {
-                        state.start_pos = current_pos;
-                        state.anim.from = current_pos;
-                        state.end_pos = viewport_y;
-                        state.anim.to = viewport_y;
-
-                        state.anim_start = Instant::now();
-                        state.anim_duration = state.anim.duration();
-                    }
-                    None => {
-                        let spring = Spring {
-                            from: current_pos,
-                            to: viewport_y,
-                            initial_velocity: 0.0, // seed with initial velocity if interrupting an existing animation?
-                            params: SpringParams::default(),
-                        };
-
-                        self.scroll_state_y = Some(ScrollState {
-                            start_pos: current_pos,
-                            current_pos: current_pos,
-                            end_pos: viewport_y,
-                            anim_start: Instant::now(),
-                            anim_duration: spring.duration(),
-                            anim: spring,
-                            slowdown: self.slowdown,
-                        });
-                    }
-                }
-            }
-            RenderMode::ScrollLateral => {
-                let current_pos = self.calc_pos_x();
-                match &mut self.scroll_state_x {
-                    Some(state) => {
-                        state.start_pos = current_pos;
-                        state.anim.from = current_pos;
-                        state.end_pos = viewport_x;
-                        state.anim.to = viewport_x;
-                        state.anim_start = Instant::now();
-                        state.anim_duration = state.anim.duration();
-                    }
-                    None => {
-                        let current_pos = self.calc_pos_x(); // :)
-                        let spring = Spring {
-                            from: current_pos as f64,
-                            to: viewport_x,
-                            initial_velocity: 0.0, // seed with initial velocity if interrupting an existing animation?
-                            params: SpringParams::default(),
-                        };
-
-                        self.scroll_state_x = Some(ScrollState {
-                            start_pos: current_pos,
-                            current_pos: current_pos,
-                            end_pos: viewport_x,
-                            anim_start: Instant::now(),
-                            anim_duration: spring.duration(),
-                            anim: spring,
-                            slowdown: self.slowdown,
-                        });
-                    }
-                }
-            }
-        }
-
-        self.scroll_percent_x = scroll_x;
-        self.scroll_percent_y = scroll_y;
+            RenderMode::Static => return,
+            RenderMode::ScrollVertical => self.height.scroll(scroll_y, self.slowdown),
+            RenderMode::ScrollLateral => self.width.scroll(scroll_x, self.slowdown),
+        };
 
         if !is_already_scrolling {
             self.start_scroll_anim(conn);
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_image(
+        &mut self,
+        conn: &mut Connection<RenderThreadState>,
+        globals: WaylandGlobals,
+        weak: Weak<dyn Daemon>,
+        new_image_path: &str,
+        new_mode: RenderMode,
+        output_state: &OutputState,
+        scroll_position: Option<(f64, f64)>,
+        slowdown: f64,
+    ) {
+        // Create new file and load new image
+        let new_file = tempfile::tempfile().expect("creating tempfile for shared mem failed");
+        let pandora = weak.upgrade().unwrap();
+        verbose(pandora.clone(), "starting swap of image buffers");
+
+        let (image_width, image_height) = image_to_file(
+            pandora.clone(),
+            &new_mode,
+            &new_file,
+            new_image_path,
+            output_state.width as u32,
+            output_state.height as u32,
+        );
+
+        let bytes_per_row = image_width * 4;
+        let total_bytes = bytes_per_row * image_height;
+
+        // Create new pool and buffer
+        let pool = globals.shm.create_pool(
+            conn,
+            OwnedFd::from(new_file.try_clone().unwrap()),
+            total_bytes,
+        );
+        let new_buffer = pool.create_buffer(
+            conn,
+            0,
+            image_width,
+            image_height,
+            bytes_per_row,
+            Format::Argb8888,
+        );
+
+        // Calculate scroll positions
+        let (scroll_percent_x, scroll_percent_y) = match scroll_position {
+            Some((x, y)) => (x, y),
+            None => (self.width.scroll_percent, self.height.scroll_percent),
+        };
+
+        let (viewport_width, viewport_height) = get_viewport_dimensions(
+            image_width,
+            image_height,
+            output_state.width,
+            output_state.height,
+            new_mode,
+        );
+
+        // Create new dimensions
+        let new_width_dim = ScrollDimension::new(
+            output_state.width,
+            image_width,
+            viewport_width,
+            scroll_percent_x,
+        );
+        let new_height_dim = ScrollDimension::new(
+            output_state.height,
+            image_height,
+            viewport_height,
+            scroll_percent_y,
+        );
+
+        // Calculate new viewport geometry
+        let (viewport_x_start, viewport_width) = new_width_dim.compute_geometry();
+        let (viewport_y_start, viewport_height) = new_height_dim.compute_geometry();
+
+        // Save reference to old buffer for cleanup
+        let old_buffer = self.buffer;
+
+        // Atomically swap to new buffer and update state
+        verbose(pandora.clone(), "attaching new buffer");
+        self.surface.attach(conn, Some(new_buffer), 0, 0);
+        self.viewport
+            .set_destination(conn, output_state.width, output_state.height);
+        self.viewport.set_source(
+            conn,
+            viewport_x_start.into(),
+            viewport_y_start.into(),
+            viewport_width.into(),
+            viewport_height.into(),
+        );
+
+        // Update all state fields
+        self.buffer = new_buffer;
+        self.file = new_file;
+        self.image = new_image_path.to_string();
+        self.mode = new_mode;
+        self.slowdown = slowdown;
+        self.width = new_width_dim;
+        self.height = new_height_dim;
+
+        // Mark the entire surface as damaged so compositor knows to redraw
+        self.surface
+            .damage(conn, 0, 0, output_state.width, output_state.height);
+
+        // Commit the changes
+        self.surface.commit(conn);
+        conn.blocking_roundtrip().unwrap();
+
+        // Now that the new buffer is committed, destroy the old one
+        old_buffer.destroy(conn);
     }
 
     fn start_scroll_anim(&mut self, conn: &mut Connection<RenderThreadState>) {
@@ -435,47 +555,15 @@ impl WallpaperRenderState {
     }
 
     fn calc_pos_x(&self) -> f64 {
-        if let Some(scroll_state) = self.scroll_state_x {
-            let eclipsed_duration = Instant::now() - scroll_state.anim_start;
-            let seconds = eclipsed_duration.as_secs_f64() / scroll_state.slowdown;
-            let scaled_duration = Duration::from_secs_f64(seconds);
-            return scroll_state.anim.value_at(scaled_duration).round();
-        } else {
-            let (viewport_width, _) = get_viewport_dimensions(
-                self.image_width,
-                self.image_height,
-                self.output_width,
-                self.output_height,
-                self.mode,
-            );
-            let (viewport_x_start, _) =
-                compute_viewport_range(self.image_width, viewport_width, self.scroll_percent_x);
-            return viewport_x_start;
-        }
+        self.width.calc_current_position()
     }
 
     fn calc_pos_y(&self) -> f64 {
-        if let Some(scroll_state) = self.scroll_state_y {
-            let eclipsed_duration = Instant::now() - scroll_state.anim_start;
-            let seconds = eclipsed_duration.as_secs_f64() / scroll_state.slowdown;
-            let scaled_duration = Duration::from_secs_f64(seconds);
-            return scroll_state.anim.value_at(scaled_duration).round();
-        } else {
-            let (_, viewport_height) = get_viewport_dimensions(
-                self.image_width,
-                self.image_height,
-                self.output_width,
-                self.output_height,
-                self.mode,
-            );
-            let (viewport_y_start, _) =
-                compute_viewport_range(self.image_height, viewport_height, self.scroll_percent_y);
-            return viewport_y_start;
-        }
+        self.height.calc_current_position()
     }
 
     fn do_scroll_tick(&mut self, conn: &mut Connection<RenderThreadState>) {
-        if self.scroll_state_x.is_none() && self.scroll_state_y.is_none() {
+        if self.width.scroll_state.is_none() && self.height.scroll_state.is_none() {
             return; // probably an opportunistic dispatch for a surface w/o scroll state
         }
 
@@ -484,54 +572,34 @@ impl WallpaperRenderState {
         //println!("> [render] scrolling to {next_pos_x},{next_pos_y}");
         self.scroll_to(conn, next_pos_x, next_pos_y);
 
-        if self.scroll_state_x.is_some_and(|s| s.is_animating())
-            || self.scroll_state_y.is_some_and(|s| s.is_animating())
+        if self.width.scroll_state.is_some_and(|s| s.is_animating())
+            || self.height.scroll_state.is_some_and(|s| s.is_animating())
         {
             self.surface.frame_with_cb(conn, frame_callback);
         }
-        match self.scroll_state_x {
-            Some(mut state) => {
-                if !state.is_animating() {
-                    self.scroll_state_x = None
-                } else {
-                    state.current_pos = next_pos_x;
-                }
+        if let Some(mut state) = self.width.scroll_state {
+            if !state.is_animating() {
+                self.width.scroll_state = None
+            } else {
+                state.current_pos = next_pos_x;
             }
-            None => (),
         }
-        match self.scroll_state_y {
-            Some(mut state) => {
-                if !state.is_animating() {
-                    self.scroll_state_y = None
-                } else {
-                    state.current_pos = next_pos_y;
-                }
+        if let Some(mut state) = self.height.scroll_state {
+            if !state.is_animating() {
+                self.height.scroll_state = None
+            } else {
+                state.current_pos = next_pos_y;
             }
-            None => (),
         }
     }
 
     fn scroll_to(&mut self, conn: &mut Connection<RenderThreadState>, pos_x: f64, pos_y: f64) {
-        let (viewport_width, viewport_height) = get_viewport_dimensions(
-            self.image_width,
-            self.image_height,
-            self.output_width,
-            self.output_height,
-            self.mode,
-        );
-        let (viewport_x_start, viewport_x_end) =
-            compute_viewport_range(self.image_width, viewport_width, self.scroll_percent_x);
-        let (viewport_y_start, viewport_y_end) =
-            compute_viewport_range(self.image_height, viewport_height, self.scroll_percent_y);
-        let viewport_width = viewport_x_end - viewport_x_start;
-        let viewport_height = viewport_y_end - viewport_y_start;
-
         self.viewport.set_source(
             conn,
             pos_x.into(),
             pos_y.into(),
-            viewport_width.into(),
-            viewport_height.into(),
+            self.width.viewport_dim.into(),
+            self.height.viewport_dim.into(),
         );
 
         self.surface.commit(conn);
@@ -548,8 +616,8 @@ fn frame_callback(ctx: EventCtx<RenderThreadState, WlCallback>) {
         if let Some(render_state) = &mut os.render_state {
             match render_state {
                 OutputRenderStateVariety::Wallpaper(wallpaper_render_state) => {
-                    if wallpaper_render_state.scroll_state_x.is_some()
-                        || wallpaper_render_state.scroll_state_y.is_some()
+                    if wallpaper_render_state.width.scroll_state.is_some()
+                        || wallpaper_render_state.height.scroll_state.is_some()
                     {
                         wallpaper_render_state.do_scroll_tick(ctx.conn);
                     }
@@ -572,7 +640,7 @@ pub struct ScrollState {
 
 impl ScrollState {
     pub fn is_animating(&self) -> bool {
-        return (Instant::now() - self.anim_start) < self.anim_duration;
+        (Instant::now() - self.anim_start) < self.anim_duration
         //return self.current_pos != self.end_pos;
     }
 }
@@ -606,8 +674,10 @@ pub fn initialize_wallpaper_outputs(
     conn: &mut Connection<RenderThreadState>,
     config: &DaemonConfig,
     state: &mut RenderThreadState,
+    initial_positions: &HashMap<String, (f64, f64)>,
 ) {
     for (output, output_state) in &mut state.outputs {
+        let maybe_positions = initial_positions.get(&output_state.name);
         let output_config = match config
             .outputs
             .iter()
@@ -635,7 +705,7 @@ pub fn initialize_wallpaper_outputs(
             mode,
             output.wl_output,
             output_state,
-            None,
+            maybe_positions.copied(),
             config.animation.slowdown.max(0.001),
         );
         output_state.render_state =
@@ -647,7 +717,7 @@ fn image_to_file(
     pandora: Arc<dyn Daemon>,
     mode: &RenderMode,
     f: &File,
-    path: &String,
+    path: &str,
     width: u32,
     height: u32,
 ) -> (i32, i32) {
@@ -672,7 +742,7 @@ fn image_to_file(
         "wallpaper",
         format!("file loaded and scaled to {img_width} x {img_height}"),
     );
-    return (img_width as i32, img_height as i32);
+    (img_width as i32, img_height as i32)
 }
 
 fn wl_registry_cb(
@@ -749,14 +819,12 @@ fn wl_output_cb(ctx: EventCtx<RenderThreadState, WlOutput>) {
     }
 }
 
-pub fn layer_shell_callback(mut ctx: EventCtx<RenderThreadState, ZwlrLayerSurfaceV1>) {
+pub fn layer_shell_callback(ctx: EventCtx<RenderThreadState, ZwlrLayerSurfaceV1>) {
     let layer: ZwlrLayerSurfaceV1 = ctx.proxy;
-    match ctx.event {
-        wayrs_protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::Event::Configure(
-            args,
-        ) => {
-            layer.ack_configure(&mut ctx.conn, args.serial);
-        }
-        _ => (),
+    if let wayrs_protocols::wlr_layer_shell_unstable_v1::zwlr_layer_surface_v1::Event::Configure(
+        args,
+    ) = ctx.event
+    {
+        layer.ack_configure(ctx.conn, args.serial);
     }
 }

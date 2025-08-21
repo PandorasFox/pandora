@@ -1,11 +1,12 @@
 use crate::daemon::Daemon;
-use crate::pithos::commands::{RenderThreadCommand, ScrollCommand};
+use crate::pithos::commands::{RenderCommand, RenderThreadCommand, ScrollCommand};
 use crate::pithos::config::DaemonConfig;
 use crate::threads::Thread;
 use crate::wayland::render_base::{OutputRenderStateVariety, RenderThreadState, WaylandGlobals};
 
+use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::thread;
 
 use wayrs_client::{Connection, IoMode};
@@ -18,10 +19,10 @@ pub struct WallpaperThreadHandle {
 impl Thread for WallpaperThreadHandle {
     fn new() -> Arc<WallpaperThreadHandle> {
         let (host_sender, thread_receiver) = channel::<RenderThreadCommand>();
-        return Arc::new(WallpaperThreadHandle {
+        Arc::new(WallpaperThreadHandle {
             inbox: Arc::new(host_sender),
             receiv: Arc::new(Mutex::new(thread_receiver)),
-        });
+        })
     }
 
     fn start(&self, daemon: Weak<dyn Daemon + Sync + Send>, config: DaemonConfig) {
@@ -32,7 +33,7 @@ impl Thread for WallpaperThreadHandle {
                 let thread = WallpaperThread {
                     pandora: daemon,
                     cmd_queue,
-                    config,
+                    config: Arc::new(RwLock::new(config)),
                 };
                 thread.start();
             }) {
@@ -45,7 +46,7 @@ impl Thread for WallpaperThreadHandle {
 struct WallpaperThread {
     pandora: Weak<dyn Daemon>,
     cmd_queue: Arc<Mutex<Receiver<RenderThreadCommand>>>,
-    config: DaemonConfig,
+    config: Arc<RwLock<DaemonConfig>>,
 }
 
 impl WallpaperThread {
@@ -70,13 +71,15 @@ impl WallpaperThread {
         self.verbose("getting initial output states".to_string());
         thread_state.get_outputs(&mut conn);
         self.verbose("initializing wallpaper states".to_string());
-        // thought: peek at self.cmd_queue => pull initial scroll events, if any, for initial position state?
+        let config = self.config.read().unwrap();
         crate::wayland::render_base::initialize_wallpaper_outputs(
             &mut conn,
-            &self.config,
+            &config,
             &mut thread_state,
+            &self.collect_scroll_events(),
         );
-        self.log("entering draw loop".to_string());
+        drop(config);
+        self.log("entering draw loop :3".to_string());
         self.draw_loop(&mut conn, &mut thread_state);
     }
 
@@ -100,11 +103,32 @@ impl WallpaperThread {
                                 .recv()
                                 .expect("thread exploded during blocking read on inbound commands"),
                         ),
-                        Err(e) => return self.log(format!("{e:?}")),
+                        Err(e) => self.log(format!("{e:?}")),
                     }
                 }
             }
         }
+    }
+
+    fn collect_scroll_events(&self) -> HashMap<String, (f64, f64)> {
+        let mut scroll_states = HashMap::new();
+
+        match self.cmd_queue.lock() {
+            Ok(queue) => loop {
+                match queue.try_recv() {
+                    Ok(RenderThreadCommand::Scroll(scroll_cmd)) => {
+                        scroll_states.insert(
+                            scroll_cmd.output.clone(),
+                            (scroll_cmd.position_x, scroll_cmd.position_y),
+                        );
+                    }
+                    Ok(_) => break,  // Non-scroll command, put it back and stop
+                    Err(_) => break, // No more commands
+                }
+            },
+            Err(_) => return scroll_states,
+        }
+        scroll_states
     }
 
     fn handle_inbound_commands(
@@ -113,13 +137,12 @@ impl WallpaperThread {
         state: &mut RenderThreadState,
     ) {
         match self.cmd_queue.lock() {
-            Ok(queue) => loop {
-                match queue.try_recv() {
-                    Ok(cmd) => self.handle_cmd(conn, state, &cmd),
-                    Err(_) => break,
+            Ok(queue) => {
+                while let Ok(cmd) = queue.try_recv() {
+                    self.handle_cmd(conn, state, &cmd)
                 }
-            },
-            Err(e) => return self.log(format!("{e:?}")),
+            }
+            Err(e) => self.log(format!("{e:?}")),
         }
     }
 
@@ -131,15 +154,118 @@ impl WallpaperThread {
     ) {
         self.verbose(format!("command: {:?}", cmd));
         match cmd {
-            RenderThreadCommand::Render(_) => {
-                // could just handle as discard old render_state & make new . . . with new scroll position? hmmmmmmm
-                //self.render(c, state).expect("error handling render command");
-                todo!();
+            RenderThreadCommand::Render(cmd) => {
+                self.render(conn, state, cmd);
             }
             RenderThreadCommand::Scroll(cmd) => {
                 self.scroll(conn, state, cmd);
-            } // reload config :/
+            }
+            RenderThreadCommand::ConfigReload(new_config) => {
+                self.config_reload(state, new_config);
+            }
         }
+    }
+
+    fn render(
+        &self,
+        conn: &mut Connection<RenderThreadState>,
+        state: &mut RenderThreadState,
+        cmd: &RenderCommand,
+    ) {
+        self.verbose(format!(
+            "rendering new image {} for output {}",
+            cmd.image, cmd.output
+        ));
+
+        // Read config once at the beginning
+        let config = self.config.read().unwrap();
+        let slowdown = config.animation.slowdown.max(0.001);
+        drop(config); // Release the lock early
+
+        // Find the target output
+        let (_output, output_state) = match state
+            .outputs
+            .iter_mut()
+            .find(|(_, os)| os.name == cmd.output)
+        {
+            Some((o, os)) => (o, os),
+            None => {
+                return self.debug(format!(
+                    "could not find output {} in state vec for render op",
+                    cmd.output
+                ));
+            }
+        };
+
+        let scroll_position = Some((cmd.position.0, cmd.position.1));
+
+        // Extract values we need to avoid borrowing conflicts
+        let output_width = output_state.width;
+        let output_height = output_state.height;
+        let output_name = output_state.name.clone();
+        let output_done = output_state.done;
+
+        // Create a temporary OutputState for the update_image call
+        let temp_output_state = crate::wayland::render_base::OutputState {
+            name: output_name,
+            width: output_width,
+            height: output_height,
+            done: output_done,
+            render_state: None, // This field won't be used in update_image
+        };
+
+        // Update existing wallpaper state with new image
+        if let Some(OutputRenderStateVariety::Wallpaper(wallpaper_state)) =
+            output_state.render_state.as_mut()
+        {
+            wallpaper_state.update_image(
+                conn,
+                state.globals,
+                state.pandora.clone(),
+                &cmd.image,
+                cmd.mode,
+                &temp_output_state,
+                scroll_position,
+                slowdown,
+            );
+        } else {
+            self.log(format!("received render command for output {} but no existing wallpaper state found - try reseat?", cmd.output));
+            return;
+        }
+
+        self.verbose(format!(
+            "successfully updated wallpaper for output {} with image {} at position ({}, {})",
+            cmd.output, cmd.image, cmd.position.0, cmd.position.1
+        ));
+    }
+
+    fn config_reload(&self, state: &mut RenderThreadState, new_config: &DaemonConfig) {
+        self.debug("reloading render thread config".to_string());
+
+        // Update our stored config
+        if let Ok(mut config) = self.config.write() {
+            *config = new_config.clone();
+        }
+
+        // Update slowdown values in all existing wallpaper states
+        let new_slowdown = new_config.animation.slowdown.max(0.001);
+
+        for (_, output_state) in &mut state.outputs {
+            if let Some(OutputRenderStateVariety::Wallpaper(wallpaper_state)) =
+                output_state.render_state.as_mut()
+            {
+                wallpaper_state.slowdown = new_slowdown;
+                self.verbose(format!(
+                    "updated slowdown to {} for output {}",
+                    new_slowdown, output_state.name
+                ));
+            }
+        }
+
+        self.log(format!(
+            "render thread config reloaded, slowdown set to {}",
+            new_slowdown
+        ));
     }
 
     fn scroll(
