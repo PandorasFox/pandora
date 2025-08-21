@@ -220,9 +220,10 @@ impl NiriProcessor {
                     output.1.max_workspace_idx = 0;
                 }
                 self.update_workspaces(&workspaces);
+                self.reseat_scroll_positions(pandora.clone());
             }
             Event::WorkspaceActivated { id, .. } => {
-                self.gen_scroll_cmd_for_workspace_id(pandora, id)
+                self.gen_scroll_cmd_for_workspace_id(pandora.clone(), id)
             }
             Event::WindowFocusChanged { id: _ } => {
                 // TODO - niri includes tile layouts in WindowLayout structs now
