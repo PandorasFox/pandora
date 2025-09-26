@@ -10,7 +10,7 @@ image = "0.25.6"
 fast_image_resize = {version = "5.2.1", features = ["rayon", "image"]}
 knus = "3.3.1"
 miette = { version = "7.6.0", features = ["fancy"] }
-niri-ipc = { git = "https://github.com/YaLTeR/niri", version = "25.5.1" }
+niri-ipc = { version = "=25.8.0" }
 notify = "8.2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.140"

@@ -53,6 +53,7 @@ pub struct RenderThreadState {
     pub detached_outputs: Vec<OutputState>,
     pub globals: WaylandGlobals,
     pub pandora: Weak<dyn Daemon>,
+    pub reseat_needed: bool,
 }
 
 impl RenderThreadState {
@@ -105,20 +106,38 @@ impl RenderThreadState {
         // check for previous state in detached_outputs
         // match against existing outputs
         // update their output state with the reusable unplugged state fields (image path, mode, ?position?, scroll state)
-        for (output, output_state) in &mut self.outputs {
-            if let Some(idx) = self
-                .detached_outputs
-                .iter()
-                .position(|prior| prior.name == output_state.name)
-            {
-                let mut prior_state = self.detached_outputs.swap_remove(idx);
+
+        // Process each output individually by temporarily removing it to avoid borrowing conflicts
+        let mut output_indices_to_process = Vec::new();
+
+        // Collect outputs that need reseating
+        for (i, (_, output_state)) in self.outputs.iter().enumerate() {
+            if self.detached_outputs.iter().any(|prior| prior.name == output_state.name) {
+                output_indices_to_process.push(i);
+            }
+        }
+
+        // Process each output by temporarily removing it from the state
+        for &output_idx in &output_indices_to_process {
+            if let Some(detached_idx) = self.detached_outputs.iter().position(|prior| {
+                if let Some((_, os)) = self.outputs.get(output_idx) {
+                    prior.name == os.name
+                } else {
+                    false
+                }
+            }) {
+                let mut prior_state = self.detached_outputs.swap_remove(detached_idx);
+                let (mut output, mut output_state) = self.outputs.swap_remove(output_idx);
+
                 output_state.reseat(
                     conn,
-                    output,
+                    &mut output,
                     &mut prior_state,
-                    self.pandora.clone(),
-                    self.globals,
+                    self,
                 );
+
+                // Put the output back
+                self.outputs.insert(output_idx, (output, output_state));
             }
         }
     }
@@ -139,13 +158,12 @@ impl OutputState {
         conn: &mut Connection<RenderThreadState>,
         new_output: &mut Output,
         prior_state: &mut OutputState,
-        weak: Weak<dyn Daemon>,
-        globals: WaylandGlobals,
+        render_state: &mut RenderThreadState,
     ) {
         if let Some(kind) = &mut prior_state.render_state {
             let new_state = match kind {
                 Wallpaper(wp_state) => Wallpaper(WallpaperRenderState::from_prior(
-                    conn, weak, wp_state, new_output, self, globals,
+                    conn, render_state, wp_state, new_output, self,
                 )),
             };
             self.render_state = Some(new_state);
@@ -280,11 +298,9 @@ pub struct WallpaperRenderState {
 }
 
 impl WallpaperRenderState {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         conn: &mut Connection<RenderThreadState>,
-        globals: WaylandGlobals,
-        weak: Weak<dyn Daemon>,
+        render_state: &mut RenderThreadState,
         image_path: &str,
         mode: RenderMode,
         wl_output: WlOutput,
@@ -293,11 +309,17 @@ impl WallpaperRenderState {
         slowdown: f64,
     ) -> Self {
         // create new buffer, load image into it, attach it to surface, apply role through daemon
-        let pandora = weak.upgrade().unwrap();
-        let surface = globals.compositor.create_surface(conn);
+        let pandora = render_state.pandora.upgrade().unwrap();
+        let surface = render_state.globals.compositor.create_surface(conn);
         pandora
             .clone()
             .apply_role_to_surface(conn, &surface, &wl_output, output_state);
+
+        // Dispatch events after applying layer role to ensure configure event is handled
+        conn.dispatch_events(render_state);
+        // note: during runtime, the above dispatch (on an output reseat after wake, for example)
+        // could happen when other displays are having similar events
+        // maybe not entirely thread-safe if the outputs vector is mutating but uhhhhhhhhhhhh :) later problem :)
         let file = tempfile::tempfile().expect("creating tempfile for shared mem failed");
 
         let (image_width, image_height) = image_to_file(
@@ -314,7 +336,7 @@ impl WallpaperRenderState {
         // make a pool that consists of a single image; map that onto a single buffer.
         // not bothering to do one big pool with one big map and keeping track of byte offsets.
         let pool =
-            globals
+            render_state.globals
                 .shm
                 .create_pool(conn, OwnedFd::from(file.try_clone().unwrap()), total_bytes);
         let buf = pool.create_buffer(
@@ -325,7 +347,7 @@ impl WallpaperRenderState {
             bytes_per_row,
             Format::Argb8888,
         );
-        let viewport = globals.viewporter.get_viewport(conn, surface);
+        let viewport = render_state.globals.viewporter.get_viewport(conn, surface);
         let (scroll_percent_x, scroll_percent_y) = match scroll_percents {
             Some((x, y)) => (x, y),
             None => (0.0, 0.0),
@@ -367,8 +389,8 @@ impl WallpaperRenderState {
             viewport_height.into(),
         );
         surface.commit(conn);
+        surface.frame_with_cb(conn, frame_callback);
         conn.blocking_roundtrip().unwrap();
-        conn.flush(IoMode::Blocking).unwrap(); // can comment this out perhaps?
 
         WallpaperRenderState {
             surface,
@@ -392,17 +414,15 @@ impl WallpaperRenderState {
 
     pub fn from_prior(
         conn: &mut Connection<RenderThreadState>,
-        weak: Weak<dyn Daemon>,
+        render_state: &mut RenderThreadState,
         unplugged: &mut WallpaperRenderState,
         output: &mut Output,
         output_state: &OutputState,
-        globals: WaylandGlobals,
     ) -> Self {
         // todo: file reuse from unplugged
-        WallpaperRenderState::new(
+        let mut new_state = WallpaperRenderState::new(
             conn,
-            globals,
-            weak,
+            render_state,
             &unplugged.image,
             unplugged.mode,
             output.wl_output,
@@ -412,7 +432,9 @@ impl WallpaperRenderState {
                 unplugged.height.scroll_percent,
             )),
             unplugged.slowdown,
-        )
+        );
+        new_state.start_scroll_anim(conn);
+        return new_state;
     }
 
     pub fn scroll(
@@ -604,7 +626,7 @@ impl WallpaperRenderState {
         );
 
         self.surface.commit(conn);
-        conn.blocking_roundtrip().unwrap();
+        conn.flush(IoMode::Blocking).unwrap();
     }
 }
 
@@ -677,40 +699,54 @@ pub fn initialize_wallpaper_outputs(
     state: &mut RenderThreadState,
     initial_positions: &HashMap<String, (f64, f64)>,
 ) {
-    for (output, output_state) in &mut state.outputs {
+    // Collect the data we need first to avoid borrowing conflicts
+    let mut output_configs = Vec::new();
+    for (output, output_state) in &state.outputs {
         let maybe_positions = initial_positions.get(&output_state.name);
-        let output_config = match config
-            .outputs
-            .iter()
-            .find(|oc| oc.name == output_state.name)
-        {
-            Some(c) => c,
-            None => {
-                println!(
-                    "output {} not found in configs; skipping",
-                    output_state.name
-                );
-                continue;
-            }
-        };
-        let mode = match output_config.mode {
-            Some(mode) => mode,
-            None => RenderMode::Static,
+        if let Some(output_config) = config.outputs.iter().find(|oc| oc.name == output_state.name) {
+            let mode = output_config.mode.unwrap_or(RenderMode::Static);
+            output_configs.push((
+                output.wl_output,
+                output_state.name.clone(),
+                output_config.image.clone(),
+                mode,
+                maybe_positions.copied(),
+                output_state.width,
+                output_state.height,
+                output_state.done,
+            ));
+        } else {
+            println!("output {} not found in configs; skipping", output_state.name);
+        }
+    }
+
+
+    // Now process each output, creating render states one by one
+    for (wl_output, output_name, image_path, mode, scroll_percents, width, height, done) in output_configs {
+        // Create a temporary OutputState for the constructor
+        let temp_output_state = OutputState {
+            name: output_name.clone(),
+            width,
+            height,
+            done,
+            render_state: None,
         };
 
         let wallpaper_state = WallpaperRenderState::new(
             conn,
-            state.globals,
-            state.pandora.clone(),
-            &output_config.image,
+            state,
+            &image_path,
             mode,
-            output.wl_output,
-            output_state,
-            maybe_positions.copied(),
+            wl_output,
+            &temp_output_state,
+            scroll_percents,
             config.animation.slowdown.max(0.001),
         );
-        output_state.render_state =
-            Some(crate::wayland::render_base::OutputRenderStateVariety::Wallpaper(wallpaper_state));
+
+        // Find the actual output state and update it
+        if let Some((_, output_state)) = state.outputs.iter_mut().find(|(_, os)| os.name == output_name) {
+            output_state.render_state = Some(OutputRenderStateVariety::Wallpaper(wallpaper_state));
+        }
     }
 }
 
@@ -765,13 +801,11 @@ fn wl_registry_cb(
                 None => {
                     state.outputs.push((output, OutputState::default()));
                     // todo: file reuse when constructing new state
-                    state.try_reseat_outputs(conn);
-                    // todo: investigate hitch? might be from image load?
+                    state.reseat_needed = true;
                 }
             };
         }
         wl_registry::Event::GlobalRemove(name) => {
-            //eprintln!("remove event [{event:?}]");
             if let Some(i) = state
                 .outputs
                 .iter()
@@ -814,7 +848,7 @@ fn wl_output_cb(ctx: EventCtx<RenderThreadState, WlOutput>) {
         wl_output::Event::Done => {
             output_state.done = true;
             output.done = true;
-            ctx.state.try_reseat_outputs(ctx.conn);
+            ctx.state.reseat_needed = true;
         }
         _ => (),
     }

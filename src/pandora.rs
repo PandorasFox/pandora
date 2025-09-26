@@ -70,18 +70,18 @@ impl Daemon for Pandora {
             Layer::Background,
             CString::new("pandora").unwrap(),
         );
-
-        layer_surface.set_size(conn, width as u32, height as u32);
-        layer_surface.set_anchor(
-            conn,
-            Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right,
-        );
-        layer_surface.set_exclusive_zone(conn, -1);
-
         conn.set_callback_for(
             layer_surface,
             pandora::wayland::render_base::layer_shell_callback,
         );
+
+        layer_surface.set_size(conn, width as u32, height as u32);
+        layer_surface.set_anchor(
+            conn,
+            Anchor::Top | Anchor::Left | Anchor::Bottom | Anchor::Right,
+        );
+        layer_surface.set_exclusive_zone(conn, -1);
+        
         wl_surface.commit(conn);
         conn.blocking_roundtrip().unwrap();
     }

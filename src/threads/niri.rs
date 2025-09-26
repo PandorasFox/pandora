@@ -128,6 +128,13 @@ struct NiriProcessor {
     workspaces: Vec<Workspace>,
 }
 
+/*
+    TODO: refactor/implement lateral scrolling position within workspaces
+    handle window change events to (re)calculate scrolling positions of workspaces
+    plumb scroll command generation to use desired workspace scrolling position
+    
+*/
+
 impl NiriProcessor {
     fn update_config(
         &mut self,

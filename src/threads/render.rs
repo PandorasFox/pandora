@@ -67,6 +67,7 @@ impl WallpaperThread {
             detached_outputs: Vec::new(),
             globals: WaylandGlobals::new(&mut conn),
             pandora: self.pandora.clone(),
+            reseat_needed: false,
         };
         self.verbose("getting initial output states".to_string());
         thread_state.get_outputs(&mut conn);
@@ -89,6 +90,13 @@ impl WallpaperThread {
             let received_events = conn.recv_events(IoMode::NonBlocking);
 
             conn.dispatch_events(state);
+
+            // Handle output reseating outside of dispatch context
+            if state.reseat_needed {
+                state.reseat_needed = false;
+                state.try_reseat_outputs(conn);
+            }
+
             self.handle_inbound_commands(conn, state);
 
             if received_events.is_err() {
