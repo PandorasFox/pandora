@@ -771,7 +771,7 @@ fn image_to_file(
         // idealy coerce to static at runtime and just log
         // im lazy for now tho
         panic!(
-            "image scaled to {img_width} x {img_height}, but output is {width} by {height}.\n   Try static mode for this image, as it's maybe insufficient for the desired mode :("
+            "INVALID CONFIG COMBINATION: image scaled to {img_width} x {img_height}, but output is {width} by {height}.\nSwitch to STATIC mode for this image or try scrolling in the other direction."
         )
     }
     pandora.clone().verbose(
