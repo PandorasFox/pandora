@@ -103,6 +103,7 @@ impl WallpaperThread {
                 // did not process any animation commands this tick; block on command queue lazy style
                 if !state.is_animating() {
                     // not currently animating; block on an inbound event
+                    self.verbose("parking at wait for inbound command".to_string());
                     match self.cmd_queue.lock() {
                         Ok(queue) => self.handle_cmd(
                             conn,
@@ -171,6 +172,7 @@ impl WallpaperThread {
             RenderThreadCommand::ConfigReload(new_config) => {
                 self.config_reload(state, new_config);
             }
+            RenderThreadCommand::Poke => (),
         }
     }
 

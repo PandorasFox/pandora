@@ -51,4 +51,5 @@ pub enum RenderThreadCommand {
     Render(RenderCommand),
     Scroll(ScrollCommand),
     ConfigReload(DaemonConfig),
+    Poke, // NOP to jostle out of command-blocking i/o => hand control back to the wayland control loop
 }

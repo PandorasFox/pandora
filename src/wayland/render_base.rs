@@ -420,7 +420,7 @@ impl WallpaperRenderState {
         output_state: &OutputState,
     ) -> Self {
         // todo: file reuse from unplugged
-        let mut new_state = WallpaperRenderState::new(
+        let new_state = WallpaperRenderState::new(
             conn,
             render_state,
             &unplugged.image,
@@ -433,7 +433,6 @@ impl WallpaperRenderState {
             )),
             unplugged.slowdown,
         );
-        new_state.start_scroll_anim(conn);
         return new_state;
     }
 

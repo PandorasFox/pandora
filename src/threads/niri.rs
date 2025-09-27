@@ -223,6 +223,7 @@ impl NiriProcessor {
     fn process(&mut self, pandora: Arc<dyn Daemon + Send + Sync>, e: niri_ipc::Event) {
         match e {
             Event::WorkspacesChanged { workspaces } => {
+                self.poke(pandora.clone());
                 for output in &mut self.outputs {
                     output.1.max_workspace_idx = 0;
                 }
@@ -233,6 +234,7 @@ impl NiriProcessor {
                 self.gen_scroll_cmd_for_workspace_id(pandora.clone(), id)
             }
             Event::WindowFocusChanged { id: _ } => {
+                self.poke(pandora.clone());
                 // TODO - niri includes tile layouts in WindowLayout structs now
                 // we should keep track of the full pixel width of each workspace,
                 // as well as the position of the focused window within that mosaic
@@ -240,8 +242,15 @@ impl NiriProcessor {
                 // we'll want to then start using that whenever we gen_scroll_cmd,
                 // and just trust the render thread to discard or use as needed.
             }
+            Event::WindowLayoutsChanged { changes } => {
+                self.poke(pandora.clone());
+            }
             _ => (), // idc about other events rn
         }
+    }
+
+    fn poke(&self, pandora: Arc<dyn Daemon + Send + Sync>) {
+        pandora.handle_cmd(&CommandType::Tc(RenderThreadCommand::Poke));
     }
 
     fn gen_scroll_cmd_for_workspace_id(&self, pandora: Arc<dyn Daemon + Send + Sync>, id: u64) {
