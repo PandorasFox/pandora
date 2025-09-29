@@ -3,7 +3,6 @@ use crate::pithos::anims::spring::Spring;
 use crate::pithos::commands::RenderMode;
 use crate::pithos::config::DaemonConfig;
 use crate::pithos::misc::get_viewport_dimensions;
-use crate::wayland::render_base::OutputRenderStateVariety::Wallpaper;
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -86,17 +85,16 @@ impl RenderThreadState {
 
     pub fn is_animating(&self) -> bool {
         for (_, output_state) in &self.outputs {
-            if let Some(render_state) = &output_state.render_state {
-                match render_state {
-                    Wallpaper(wallpaper_render_state) => {
+            match &output_state.render_state {
+                OutputRenderStateVariety::Wallpaper(wallpaper_render_state) => {
                         if wallpaper_render_state.width.scroll_state.is_some() {
                             return true;
                         }
                         if wallpaper_render_state.height.scroll_state.is_some() {
                             return true;
                         }
-                    } //Lockscreen => (),
-                }
+                } //OutputRenderStateVariety::Lockscreen => (),
+                OutputRenderStateVariety::None => {}
             }
         }
         false
@@ -143,13 +141,26 @@ impl RenderThreadState {
     }
 }
 
-#[derive(Default)]
 pub struct OutputState {
     pub name: String,
     pub width: i32,
     pub height: i32,
     pub done: bool,
-    pub render_state: Option<OutputRenderStateVariety>,
+    pub transform: wl_output::Transform,
+    pub render_state: OutputRenderStateVariety,
+}
+
+impl Default for OutputState {
+    fn default() -> Self {
+        Self {
+            name: String::default(),
+            width: 0,
+            height: 0,
+            done: false,
+            transform: wl_output::Transform::Normal,
+            render_state: OutputRenderStateVariety::None,
+        }
+    }
 }
 
 impl OutputState {
@@ -160,26 +171,27 @@ impl OutputState {
         prior_state: &mut OutputState,
         render_state: &mut RenderThreadState,
     ) {
-        if let Some(kind) = &mut prior_state.render_state {
-            let new_state = match kind {
-                Wallpaper(wp_state) => Wallpaper(WallpaperRenderState::from_prior(
+        match &mut prior_state.render_state {
+            OutputRenderStateVariety::Wallpaper(wp_state) => {
+                let new_state = OutputRenderStateVariety::Wallpaper(WallpaperRenderState::from_prior(
                     conn, render_state, wp_state, new_output, self,
-                )),
-            };
-            self.render_state = Some(new_state);
+                ));
+                self.render_state = new_state;
+            }
+            OutputRenderStateVariety::None => {}
         }
     }
 
     pub fn yeet(&mut self, conn: &mut Connection<RenderThreadState>) {
-        if let Some(kind) = &self.render_state {
-            match kind {
-                Wallpaper(wp_state) => wp_state.yeet(conn),
-            };
+        match &self.render_state {
+            OutputRenderStateVariety::Wallpaper(wp_state) => wp_state.yeet(conn),
+            OutputRenderStateVariety::None => {}
         }
     }
 }
 
 pub enum OutputRenderStateVariety {
+    None,
     Wallpaper(WallpaperRenderState),
     //Lockscreen,
 }
@@ -634,16 +646,15 @@ fn frame_callback(ctx: EventCtx<RenderThreadState, WlCallback>) {
     // where we update that in the draw loop -> dispatch stuff
     // rly goofy ngl........
     for (_, os) in &mut ctx.state.outputs {
-        if let Some(render_state) = &mut os.render_state {
-            match render_state {
-                OutputRenderStateVariety::Wallpaper(wallpaper_render_state) => {
-                    if wallpaper_render_state.width.scroll_state.is_some()
-                        || wallpaper_render_state.height.scroll_state.is_some()
-                    {
-                        wallpaper_render_state.do_scroll_tick(ctx.conn);
-                    }
-                } //OutputRenderStateVariety::Lockscreen => (),
-            }
+        match &mut os.render_state {
+            OutputRenderStateVariety::Wallpaper(wallpaper_render_state) => {
+                if wallpaper_render_state.width.scroll_state.is_some()
+                    || wallpaper_render_state.height.scroll_state.is_some()
+                {
+                    wallpaper_render_state.do_scroll_tick(ctx.conn);
+                }
+            } //OutputRenderStateVariety::Lockscreen => (),
+            OutputRenderStateVariety::None => {}
         }
     }
 }
@@ -727,7 +738,8 @@ pub fn initialize_wallpaper_outputs(
             width,
             height,
             done,
-            render_state: None,
+            transform: wl_output::Transform::Normal,
+            render_state: OutputRenderStateVariety::None,
         };
 
         let wallpaper_state = WallpaperRenderState::new(
@@ -743,7 +755,7 @@ pub fn initialize_wallpaper_outputs(
 
         // Find the actual output state and update it
         if let Some((_, output_state)) = state.outputs.iter_mut().find(|(_, os)| os.name == output_name) {
-            output_state.render_state = Some(OutputRenderStateVariety::Wallpaper(wallpaper_state));
+            output_state.render_state = OutputRenderStateVariety::Wallpaper(wallpaper_state);
         }
     }
 }
@@ -823,13 +835,6 @@ fn wl_output_cb(ctx: EventCtx<RenderThreadState, WlOutput>) {
         .find(|o| o.0.wl_output == ctx.proxy)
         .unwrap();
 
-    if output.done {
-        println!(
-            "received event {:?} for output that's already .done - reseat?",
-            ctx.event
-        );
-        return;
-    }
     match ctx.event {
         wl_output::Event::Name(name) => {
             output_state.name = name.clone().into_string().unwrap();
@@ -838,6 +843,29 @@ fn wl_output_cb(ctx: EventCtx<RenderThreadState, WlOutput>) {
         wl_output::Event::Mode(mode) => {
             output_state.width = mode.width;
             output_state.height = mode.height;
+        }
+        wl_output::Event::Geometry(geometry) => {
+            let prev_transform = output_state.transform;
+            let new_transform = geometry.transform;
+
+            // Check if transform changed from/to a 90° or 270° rotation
+            let prev_is_rotated = matches!(prev_transform,
+                wl_output::Transform::_90 | wl_output::Transform::_270 |
+                wl_output::Transform::Flipped90 | wl_output::Transform::Flipped270);
+            let new_is_rotated = matches!(new_transform,
+                wl_output::Transform::_90 | wl_output::Transform::_270 |
+                wl_output::Transform::Flipped90 | wl_output::Transform::Flipped270);
+
+            // Update the transform
+            output_state.transform = new_transform;
+
+            // If rotation state changed, swap width/height and flag for reseat
+            if prev_is_rotated != new_is_rotated {
+                let old_width = output_state.width;
+                output_state.width = output_state.height;
+                output_state.height = old_width;
+                ctx.state.reseat_needed = true;
+            }
         }
         // wl_output::Event::Scale(scale) => output.scale = Some(scale), // maybe track this for lockscreen element scaling?
         wl_output::Event::Done => {

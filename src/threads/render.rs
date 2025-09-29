@@ -209,24 +209,18 @@ impl WallpaperThread {
 
         let scroll_position = Some((cmd.position.0, cmd.position.1));
 
-        // Extract values we need to avoid borrowing conflicts
-        let output_width = output_state.width;
-        let output_height = output_state.height;
-        let output_name = output_state.name.clone();
-        let output_done = output_state.done;
-
-        // Create a temporary OutputState for the update_image call
         let temp_output_state = crate::wayland::render_base::OutputState {
-            name: output_name,
-            width: output_width,
-            height: output_height,
-            done: output_done,
-            render_state: None, // This field won't be used in update_image
+            name: output_state.name.clone(),
+            width: output_state.width,
+            height: output_state.height,
+            done: output_state.done,
+            transform: output_state.transform,
+            render_state: crate::wayland::render_base::OutputRenderStateVariety::None,
         };
 
         // Update existing wallpaper state with new image
-        if let Some(OutputRenderStateVariety::Wallpaper(wallpaper_state)) =
-            output_state.render_state.as_mut()
+        if let OutputRenderStateVariety::Wallpaper(wallpaper_state) =
+            &mut output_state.render_state
         {
             wallpaper_state.update_image(
                 conn,
@@ -261,8 +255,8 @@ impl WallpaperThread {
         let new_slowdown = new_config.animation.slowdown.max(0.001);
 
         for (_, output_state) in &mut state.outputs {
-            if let Some(OutputRenderStateVariety::Wallpaper(wallpaper_state)) =
-                output_state.render_state.as_mut()
+            if let OutputRenderStateVariety::Wallpaper(wallpaper_state) =
+                &mut output_state.render_state
             {
                 wallpaper_state.slowdown = new_slowdown;
                 self.verbose(format!(
@@ -296,8 +290,8 @@ impl WallpaperThread {
             }
         };
 
-        if let Some(OutputRenderStateVariety::Wallpaper(render_state)) =
-            output_state.render_state.as_mut()
+        if let OutputRenderStateVariety::Wallpaper(render_state) =
+            &mut output_state.render_state
         {
             render_state.scroll(conn, cmd.position_x, cmd.position_y);
         } else {
