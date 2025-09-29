@@ -42,4 +42,5 @@ check() {
 
 package() {
 	install -Dm0755 -t "$pkgdir/usr/bin/" "target/release/pandora"
+	install -Dm0755 -t "$pkgdir/usr/share/doc/pandora/" "sample files/pandora.service"
 }
