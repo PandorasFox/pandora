@@ -2,10 +2,7 @@
 
 pandora is a parallax-scrolling wallpaper daemon for wayland systems.
 it is primary intended to be used with [niri](https://github.com/yaLTeR/niri) and bound to its IPC stream,
-but I'm open to implementing other compositor IPC agents once it is feature-complete.
-
-> [!NOTE]
-> pandora is performant and usable as a basic parallalx wallpaper daemon. New feature extensions (such as 2d scrolling & lockscreen functionality) are still being implemented.
+but I'm open to implementing other compositor IPC agents in the future.
 
 ## installing
     cargo install --git https://github.com/PandorasFox/pandora
@@ -47,4 +44,4 @@ There's live config reloading for playing with animation slowdowns and whatnot. 
   once support lands in Smithay.
 
 This is my first rust project in a little while, and my first Wayland/graphics project ever, so feedback on
-those aspects is welcome.
+those aspects is welcome :)

@@ -31,7 +31,6 @@ pub struct Pandora {
     logger: Arc<LogThread>,
     niri_ag_thread: Option<Arc<NiriAgent>>,
     configw_thread: Arc<ConfigWatcher>,
-    // key: output name
     bgwallp_thread: Arc<WallpaperThreadHandle>,
     // key: file path
     // useful central cache of loaded images for lockscreen etc

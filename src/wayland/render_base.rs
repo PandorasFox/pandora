@@ -828,9 +828,13 @@ fn image_to_file(
     // Check aspect ratios for ScrollVertical mode fallback
     let effective_mode = match mode {
         RenderMode::ScrollVertical => {
+            // e.g. portrait 1:3 image, 1/3
             let image_aspect_ratio = img_width_orig as f64 / img_height_orig as f64;
+            // e.g. landscape 21:9 monitor, 2.133...
+            // when rotated, is 9:21, or ~0.42
             let output_aspect_ratio = width as f64 / height as f64;
 
+            // a 1:3 image will always be sufficient for this, while a 1:2 image would be insufficient on rotate
             if image_aspect_ratio > output_aspect_ratio {
                 // Image is wider than output - fall back to Static mode
                 pandora.clone().log(
