@@ -97,6 +97,13 @@ impl WallpaperThread {
                 state.try_reseat_outputs(conn);
             }
 
+            // Handle outputs that need re-initialization after transform changes
+            for (_, output_state) in &mut state.outputs {
+                if output_state.needs_reinit {
+                    output_state.reinit();
+                }
+            }
+
             self.handle_inbound_commands(conn, state);
 
             if received_events.is_err() {

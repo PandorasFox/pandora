@@ -139,6 +139,7 @@ impl RenderThreadState {
             }
         }
     }
+
 }
 
 pub struct OutputState {
@@ -148,6 +149,7 @@ pub struct OutputState {
     pub done: bool,
     pub transform: wl_output::Transform,
     pub render_state: OutputRenderStateVariety,
+    pub needs_reinit: bool,
 }
 
 impl Default for OutputState {
@@ -159,6 +161,7 @@ impl Default for OutputState {
             done: false,
             transform: wl_output::Transform::Normal,
             render_state: OutputRenderStateVariety::None,
+            needs_reinit: false,
         }
     }
 }
@@ -187,6 +190,10 @@ impl OutputState {
             OutputRenderStateVariety::Wallpaper(wp_state) => wp_state.yeet(conn),
             OutputRenderStateVariety::None => {}
         }
+    }
+
+    pub fn reinit(&mut self) {
+        todo!()
     }
 }
 
@@ -864,14 +871,14 @@ fn wl_output_cb(ctx: EventCtx<RenderThreadState, WlOutput>) {
                 let old_width = output_state.width;
                 output_state.width = output_state.height;
                 output_state.height = old_width;
-                ctx.state.reseat_needed = true;
+                // Flag this output for re-initialization after rotation
+                output_state.needs_reinit = true;
             }
         }
         // wl_output::Event::Scale(scale) => output.scale = Some(scale), // maybe track this for lockscreen element scaling?
         wl_output::Event::Done => {
             output_state.done = true;
             output.done = true;
-            ctx.state.reseat_needed = true;
         }
         _ => (),
     }
