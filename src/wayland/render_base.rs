@@ -439,7 +439,7 @@ impl WallpaperRenderState {
     pub fn scroll(
         &mut self,
         conn: &mut Connection<RenderThreadState>,
-        scroll_x: f64,
+        _scroll_x: f64,
         scroll_y: f64,
     ) {
         // scroll (x|y) track the % (0.0 => 100.0) of the center of the viewport along each dimension
@@ -450,7 +450,6 @@ impl WallpaperRenderState {
         match self.mode {
             RenderMode::Static => return,
             RenderMode::ScrollVertical => self.height.scroll(scroll_y, self.slowdown),
-            RenderMode::ScrollLateral => self.width.scroll(scroll_x, self.slowdown),
         };
 
         if !is_already_scrolling {
@@ -757,19 +756,16 @@ fn image_to_file(
     width: u32,
     height: u32,
 ) -> (i32, i32) {
+    // note: should wrap this and fall back to static if vert won't work, or infer it ourselves
     let scale_to = match mode {
         RenderMode::Static => (Some(width), Some(height)),
         RenderMode::ScrollVertical => (Some(width), None),
-        RenderMode::ScrollLateral => (None, Some(height)),
     };
 
     pandora.clone().load_image(path).unwrap();
     let (img_width, img_height) = pandora.clone().read_img_to_file(path, f, scale_to).unwrap();
 
     if img_width < width || img_height < height {
-        // TODO: better handling of this case
-        // idealy coerce to static at runtime and just log
-        // im lazy for now tho
         panic!(
             "INVALID CONFIG COMBINATION: image scaled to {img_width} x {img_height}, but output is {width} by {height}.\nSwitch to STATIC mode for this image or try scrolling in the other direction."
         )

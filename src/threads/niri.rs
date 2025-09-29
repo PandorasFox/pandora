@@ -119,6 +119,7 @@ struct OutputState {
     current_image: String,
     mode: Option<RenderMode>,
     max_workspace_idx: u8,
+    active_workspace_idx: Option<u8>,
 }
 
 #[derive(Default)]
@@ -127,13 +128,6 @@ struct NiriProcessor {
     outputs: Vec<(String, OutputState)>,
     workspaces: Vec<Workspace>,
 }
-
-/*
-    TODO: refactor/implement lateral scrolling position within workspaces
-    handle window change events to (re)calculate scrolling positions of workspaces
-    plumb scroll command generation to use desired workspace scrolling position
-    
-*/
 
 impl NiriProcessor {
     fn update_config(
@@ -144,31 +138,52 @@ impl NiriProcessor {
         for new_output_conf in &new_config.outputs {
             let p = pandora.clone();
             let new_mode = new_output_conf.mode.unwrap_or(RenderMode::Static);
-            let (output_name, state) = match self
-                .outputs
-                .iter_mut()
-                .find(|o| o.0 == new_output_conf.name)
-            {
-                Some(v) => v,
-                None => continue,
+
+            // First, find the output and check if we need to update
+            let needs_update = if let Some((_, state)) = self.outputs.iter().find(|o| o.0 == new_output_conf.name) {
+                state.current_image != new_output_conf.image || state.mode.unwrap_or(RenderMode::Static) != new_mode
+            } else {
+                continue; // Output not found
             };
-            if state.current_image != new_output_conf.image
-                || state.mode.unwrap_or(RenderMode::Static) != new_mode
-            {
+
+            if needs_update {
+                let position = self.get_current_position_for_output(&new_output_conf.name, new_mode);
                 let cmd = RenderCommand {
-                    output: output_name.clone(),
+                    output: new_output_conf.name.clone(),
                     image: new_output_conf.image.clone(),
                     mode: new_mode,
-                    position: (0.0, 0.0), // todo: should compute scroll position + plumb this on the other end
+                    position,
                 };
                 p.handle_cmd(&CommandType::Tc(RenderThreadCommand::Render(cmd)));
 
                 // Update state to reflect the change
-                state.current_image = new_output_conf.image.clone();
-                state.mode = Some(new_mode);
+                if let Some((_, state)) = self.outputs.iter_mut().find(|o| o.0 == new_output_conf.name) {
+                    state.current_image = new_output_conf.image.clone();
+                    state.mode = Some(new_mode);
+                }
             }
         }
         self.config = new_config;
+    }
+
+    fn get_current_position_for_output(&self, output_name: &str, mode: RenderMode) -> (f64, f64) {
+        match mode {
+            RenderMode::Static => (0.0, 0.0),
+            RenderMode::ScrollVertical => {
+                // Use existing vertical scroll logic
+                let output = match self.outputs.iter().find(|o| o.0 == output_name) {
+                    Some((_, state)) => state,
+                    None => return (0.0, 0.0),
+                };
+
+                let active_workspace_idx = output.active_workspace_idx.unwrap_or(1);
+                let mut scroll_percent = 100.0 * (active_workspace_idx - 1) as f64 / (output.max_workspace_idx - 1) as f64;
+                if scroll_percent.is_nan() {
+                    scroll_percent = 50.0;
+                }
+                (50.0, scroll_percent)
+            }
+        }
     }
 
     fn update_workspaces(&mut self, workspaces: &Vec<Workspace>) {
@@ -181,8 +196,14 @@ impl NiriProcessor {
                 };
                 let cur_max_idx = output_state.1.max_workspace_idx;
                 output_state.1.max_workspace_idx = u8::max(workspace.idx, cur_max_idx);
+
+                // Update active workspace index
+                if workspace.is_active {
+                    output_state.1.active_workspace_idx = Some(workspace.idx);
+                }
             }
         }
+
         self.workspaces = workspaces.clone();
     }
 
@@ -205,15 +226,17 @@ impl NiriProcessor {
                     current_image: img_path,
                     mode: output_config.mode,
                     max_workspace_idx: 0,
+                    active_workspace_idx: None,
                 };
                 self.outputs.push((output_name.clone(), output_state));
             }
         }
         self.update_workspaces(&workspaces);
+
     }
 
-    fn reseat_scroll_positions(&self, pandora: Arc<dyn Daemon + Send + Sync>) {
-        for workspace in &self.workspaces {
+    fn reseat_scroll_positions(&mut self, pandora: Arc<dyn Daemon + Send + Sync>) {
+        for workspace in &self.workspaces.clone() {
             if workspace.is_active {
                 self.gen_scroll_cmd_for_workspace_id(pandora.clone(), workspace.id);
             }
@@ -228,21 +251,16 @@ impl NiriProcessor {
                     output.1.max_workspace_idx = 0;
                 }
                 self.update_workspaces(&workspaces);
+
                 self.reseat_scroll_positions(pandora.clone());
             }
             Event::WorkspaceActivated { id, .. } => {
                 self.gen_scroll_cmd_for_workspace_id(pandora.clone(), id)
             }
-            Event::WindowFocusChanged { id: _ } => {
-                self.poke(pandora.clone());
-                // TODO - niri includes tile layouts in WindowLayout structs now
-                // we should keep track of the full pixel width of each workspace,
-                // as well as the position of the focused window within that mosaic
-                // and compute a scroll percentage based on that
-                // we'll want to then start using that whenever we gen_scroll_cmd,
-                // and just trust the render thread to discard or use as needed.
-            }
-            Event::WindowLayoutsChanged { changes } => {
+            //Event::WindowFocusChanged { id: _id } => {
+            //    self.poke(pandora.clone());
+            //}
+            Event::WindowLayoutsChanged { changes: _changes } => {
                 self.poke(pandora.clone());
             }
             _ => (), // idc about other events rn
@@ -286,10 +304,6 @@ impl NiriProcessor {
                     position_y: scroll_percent,
                 });
                 Some(CommandType::Tc(cmd))
-            }
-            Some(RenderMode::ScrollLateral) => {
-                // TODO: implement horizontal scrolling for window changes
-                todo!()
             }
             Some(RenderMode::Static) => None,
         } {

@@ -6,10 +6,8 @@ pub enum RenderMode {
     // single image
     Static, // will scale up/down to fill
     ScrollVertical,
-    ScrollLateral,
-    // scrolling both directions will be trickier to implement. later problem.
-    // hello from later me: honestly it's probably easier than I thought:
-    // the agent can enforce positional state well, & correcting-on-the-fly looks better than expected
+    // ScrollLateral, // not using this in niri agent presently; not enough IPC to cleanly animate on
+    // most of the logic remains in comments; could be useful for other compositors with portrait monitors (?).
 }
 
 // ===== COMMAND STRUCTS =====

@@ -137,15 +137,10 @@ pub fn get_viewport_dimensions(
             let viewport_height = (width_ratio * output_height as f64).round() as i32;
             (viewport_width, viewport_height)
         }
-        RenderMode::ScrollLateral => {
-            let viewport_width = (height_ratio * output_width as f64).round() as i32;
-            let viewport_height = image_height;
-            (viewport_width, viewport_height)
-        }
     }
 }
 
-// i used claude pro to generate these tests, with some nudging about what the expectations were.
+// i used Claude to generate these tests, with some nudging about what the expectations were.
 // it worked reasonably well and didn't actually take that long, and (after fixing the one test
 // that got horizontal and vertical confused), the tests did show my function worked. yippee :)
 #[cfg(test)]
@@ -205,22 +200,6 @@ mod tests {
         assert_eq!(vh, expected_height);
         assert!(vw <= 2000); // Viewport width <= image width
         assert!(vh <= 3000); // Viewport height <= image height
-
-        let output_ratio = 1920.0 / 1080.0;
-        let viewport_ratio = vw as f64 / vh as f64;
-        assert!((viewport_ratio - output_ratio).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_scroll_lateral_mode() {
-        // In lateral scroll mode, viewport height = image height
-        // viewport width scaled to maintain output aspect ratio
-        let (vw, vh) = get_viewport_dimensions(4000, 1500, 1920, 1080, RenderMode::ScrollLateral);
-        assert_eq!(vh, 1500); // Full image height
-        let expected_width = 2667;
-        assert_eq!(vw, expected_width);
-        assert!(vw <= 4000); // Viewport width <= image width
-        assert!(vh <= 1500); // Viewport height <= image height
 
         let output_ratio = 1920.0 / 1080.0;
         let viewport_ratio = vw as f64 / vh as f64;
@@ -289,15 +268,6 @@ mod tests {
         assert!(vw <= 1200);
         assert!(vh <= 8000);
         let output_ratio = 1366.0 / 768.0;
-        let viewport_ratio = vw as f64 / vh as f64;
-        assert!((viewport_ratio - output_ratio).abs() < 0.01);
-
-        // Lateral scroll: ultrawide with wide panorama
-        let (vw, vh) = get_viewport_dimensions(12000, 2000, 3440, 1440, RenderMode::ScrollLateral);
-        assert_eq!(vh, 2000);
-        assert!(vw <= 12000);
-        assert!(vh <= 2000);
-        let output_ratio = 3440.0 / 1440.0;
         let viewport_ratio = vw as f64 / vh as f64;
         assert!((viewport_ratio - output_ratio).abs() < 0.01);
 
