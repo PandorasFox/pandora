@@ -1,4 +1,7 @@
-use fast_image_resize::{images::Image, pixels::{U8x3, U8x4}};
+use fast_image_resize::{
+    images::Image,
+    pixels::{U8x3, U8x4},
+};
 use std::{
     fs::File,
     io::{BufWriter, Write},
@@ -16,15 +19,13 @@ pub fn img_into_buffer(img: &Image, buf: &mut BufWriter<&File>) {
             let (r, g, b, a) = (pixel.0[0], pixel.0[1], pixel.0[2], pixel.0[3]);
             buf.write_all(&[b, g, r, a]).unwrap();
         }
-    } else {
-        if let Some(typed) = img.typed_image::<U8x3>() {
-            for pixel in typed.pixels() {
-                let (r, g, b, a) = (pixel.0[0], pixel.0[1], pixel.0[2], u8::max_value());
-                buf.write_all(&[b, g, r, a]).unwrap();
-            }
-        } else {
-            panic!("image could not be coerced to U8x4");
+    } else if let Some(typed) = img.typed_image::<U8x3>() {
+        for pixel in typed.pixels() {
+            let (r, g, b, a) = (pixel.0[0], pixel.0[1], pixel.0[2], u8::MAX);
+            buf.write_all(&[b, g, r, a]).unwrap();
         }
+    } else {
+        panic!("image could not be coerced to U8x4");
     }
 
     let loop_end = std::time::Instant::now();

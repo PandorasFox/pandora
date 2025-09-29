@@ -87,7 +87,7 @@ fn run(
         let mut read_event = socket.read_events();
         loop {
             match read_event() {
-                Ok(event ) => {
+                Ok(event) => {
                     processor.process(pandora.clone(), event);
                     match cmd_queue.lock() {
                         Ok(channel) => {
@@ -102,10 +102,11 @@ fn run(
                             }
                         }
                         Err(e) => {
-                            pandora.log("niri-agent", format!("error acquiring channel lock: {e:?}"));
+                            pandora
+                                .log("niri-agent", format!("error acquiring channel lock: {e:?}"));
                         }
                     }
-                },
+                }
                 Err(e) => {
                     pandora.debug("niri-agent", format!("event read failed {e:?}"));
                 }
@@ -130,24 +131,24 @@ struct NiriProcessor {
 }
 
 impl NiriProcessor {
-    fn update_config(
-        &mut self,
-        new_config: DaemonConfig,
-        pandora: Arc<dyn Daemon + Send + Sync>,
-    ) {
+    fn update_config(&mut self, new_config: DaemonConfig, pandora: Arc<dyn Daemon + Send + Sync>) {
         for new_output_conf in &new_config.outputs {
             let p = pandora.clone();
             let new_mode = new_output_conf.mode.unwrap_or(RenderMode::Static);
 
             // First, find the output and check if we need to update
-            let needs_update = if let Some((_, state)) = self.outputs.iter().find(|o| o.0 == new_output_conf.name) {
-                state.current_image != new_output_conf.image || state.mode.unwrap_or(RenderMode::Static) != new_mode
+            let needs_update = if let Some((_, state)) =
+                self.outputs.iter().find(|o| o.0 == new_output_conf.name)
+            {
+                state.current_image != new_output_conf.image
+                    || state.mode.unwrap_or(RenderMode::Static) != new_mode
             } else {
                 continue; // Output not found
             };
 
             if needs_update {
-                let position = self.get_current_position_for_output(&new_output_conf.name, new_mode);
+                let position =
+                    self.get_current_position_for_output(&new_output_conf.name, new_mode);
                 let cmd = RenderCommand {
                     output: new_output_conf.name.clone(),
                     image: new_output_conf.image.clone(),
@@ -157,7 +158,11 @@ impl NiriProcessor {
                 p.handle_cmd(&CommandType::Tc(RenderThreadCommand::Render(cmd)));
 
                 // Update state to reflect the change
-                if let Some((_, state)) = self.outputs.iter_mut().find(|o| o.0 == new_output_conf.name) {
+                if let Some((_, state)) = self
+                    .outputs
+                    .iter_mut()
+                    .find(|o| o.0 == new_output_conf.name)
+                {
                     state.current_image = new_output_conf.image.clone();
                     state.mode = Some(new_mode);
                 }
@@ -177,7 +182,8 @@ impl NiriProcessor {
                 };
 
                 let active_workspace_idx = output.active_workspace_idx.unwrap_or(1);
-                let mut scroll_percent = 100.0 * (active_workspace_idx - 1) as f64 / (output.max_workspace_idx - 1) as f64;
+                let mut scroll_percent = 100.0 * (active_workspace_idx - 1) as f64
+                    / (output.max_workspace_idx - 1) as f64;
                 if scroll_percent.is_nan() {
                     scroll_percent = 50.0;
                 }
@@ -232,7 +238,6 @@ impl NiriProcessor {
             }
         }
         self.update_workspaces(&workspaces);
-
     }
 
     fn reseat_scroll_positions(&mut self, pandora: Arc<dyn Daemon + Send + Sync>) {

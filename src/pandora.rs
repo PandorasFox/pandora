@@ -81,7 +81,7 @@ impl Daemon for Pandora {
             Anchor::Top | Anchor::Left | Anchor::Bottom | Anchor::Right,
         );
         layer_surface.set_exclusive_zone(conn, -1);
-        
+
         wl_surface.commit(conn);
         conn.blocking_roundtrip().unwrap();
     }
@@ -94,15 +94,15 @@ impl Daemon for Pandora {
         };
     }
 
-    fn load_image(self: Arc<Self>, path: &str) -> Result<(), DaemonError> {
+    fn load_image(self: Arc<Self>, path: &str) -> Result<(u32, u32), DaemonError> {
         let start = std::time::Instant::now();
         {
             // read lock
             match self.images.read() {
                 Ok(images_check) => {
-                    if images_check.contains_key(&path.to_string()) {
+                    if let Some(img) = images_check.get(&path.to_string()) {
                         self.debug("pandora", format!("file {} already loaded", path));
-                        return Ok(());
+                        return Ok((img.width(), img.height()));
                     }
                 }
                 Err(e) => panic!("{e:?}"),
@@ -110,6 +110,7 @@ impl Daemon for Pandora {
         }
         let img = ImageReader::open(path)?.decode()?;
         let img_loaded = std::time::Instant::now();
+        let dimensions = (img.width(), img.height());
         self.verbose(
             "pandora",
             format!("image loaded in {:?}", img_loaded - start),
@@ -118,7 +119,7 @@ impl Daemon for Pandora {
             //write lock
             match self.images.write() {
                 Ok(mut images_table) => {
-                    if images_table.contains_key(&path.to_string()) {
+                    if let Some(existing_img) = images_table.get(&path.to_string()) {
                         // written while we loaded the image! try to eliminate this case as much as we can.
                         self.verbose(
                             "pandora",
@@ -127,7 +128,7 @@ impl Daemon for Pandora {
                                 path
                             ),
                         );
-                        return Ok(());
+                        return Ok((existing_img.width(), existing_img.height()));
                     }
                     images_table.insert(path.to_string(), img /*.into_rgba8() */);
                     let img_inserted = std::time::Instant::now();
@@ -140,24 +141,10 @@ impl Daemon for Pandora {
                             img_inserted - start
                         ),
                     );
-                    Ok(())
+                    Ok(dimensions)
                 }
                 Err(e) => panic!("{e:?}"),
             }
-        }
-    }
-
-    fn get_image_dimensions(self: Arc<Self>, img: &str) -> Result<(u32, u32), DaemonError> {
-        match self.images.read() {
-            Ok(images_table) => {
-                if images_table.contains_key(&img.to_string()) {
-                    let image = images_table.get(&img.to_string()).unwrap();
-                    Ok((image.width(), image.height()))
-                } else {
-                    Err(CommandError::from_message("image not found in cache"))
-                }
-            }
-            Err(_) => Err(DaemonError::PoisonError),
         }
     }
 
@@ -294,7 +281,9 @@ impl Pandora {
         if fs::exists(path.clone()).is_err() {
             return Err(format!("could not preload {path} during init"));
         }
-        thread::spawn(move || self.load_image(&path));
+        thread::spawn(move || {
+            let _ = self.load_image(&path);
+        });
         Ok(())
     }
 

@@ -98,10 +98,23 @@ impl WallpaperThread {
             }
 
             // Handle outputs that need re-initialization after transform changes
-            for (_, output_state) in &mut state.outputs {
+            let mut output_indices_to_reinit = Vec::new();
+
+            // Collect outputs that need reinitialization
+            for (i, (_, output_state)) in state.outputs.iter().enumerate() {
                 if output_state.needs_reinit {
-                    output_state.reinit();
+                    output_indices_to_reinit.push(i);
                 }
+            }
+
+            // Process each output by temporarily removing it from the state
+            for &output_idx in &output_indices_to_reinit {
+                let (mut output, mut output_state) = state.outputs.swap_remove(output_idx);
+
+                output_state.reinit(conn, &mut output, state);
+
+                // Put the output back
+                state.outputs.insert(output_idx, (output, output_state));
             }
 
             self.handle_inbound_commands(conn, state);
@@ -223,11 +236,11 @@ impl WallpaperThread {
             done: output_state.done,
             transform: output_state.transform,
             render_state: crate::wayland::render_base::OutputRenderStateVariety::None,
+            needs_reinit: false,
         };
 
         // Update existing wallpaper state with new image
-        if let OutputRenderStateVariety::Wallpaper(wallpaper_state) =
-            &mut output_state.render_state
+        if let OutputRenderStateVariety::Wallpaper(wallpaper_state) = &mut output_state.render_state
         {
             wallpaper_state.update_image(
                 conn,
@@ -297,9 +310,7 @@ impl WallpaperThread {
             }
         };
 
-        if let OutputRenderStateVariety::Wallpaper(render_state) =
-            &mut output_state.render_state
-        {
+        if let OutputRenderStateVariety::Wallpaper(render_state) = &mut output_state.render_state {
             render_state.scroll(conn, cmd.position_x, cmd.position_y);
         } else {
             self.debug("received scroll command, but no wallpaper state found on attached outputs. reseat pending/workspace change from output disconnect?".to_string());

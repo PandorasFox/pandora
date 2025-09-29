@@ -87,12 +87,12 @@ impl RenderThreadState {
         for (_, output_state) in &self.outputs {
             match &output_state.render_state {
                 OutputRenderStateVariety::Wallpaper(wallpaper_render_state) => {
-                        if wallpaper_render_state.width.scroll_state.is_some() {
-                            return true;
-                        }
-                        if wallpaper_render_state.height.scroll_state.is_some() {
-                            return true;
-                        }
+                    if wallpaper_render_state.width.scroll_state.is_some() {
+                        return true;
+                    }
+                    if wallpaper_render_state.height.scroll_state.is_some() {
+                        return true;
+                    }
                 } //OutputRenderStateVariety::Lockscreen => (),
                 OutputRenderStateVariety::None => {}
             }
@@ -110,7 +110,11 @@ impl RenderThreadState {
 
         // Collect outputs that need reseating
         for (i, (_, output_state)) in self.outputs.iter().enumerate() {
-            if self.detached_outputs.iter().any(|prior| prior.name == output_state.name) {
+            if self
+                .detached_outputs
+                .iter()
+                .any(|prior| prior.name == output_state.name)
+            {
                 output_indices_to_process.push(i);
             }
         }
@@ -127,19 +131,13 @@ impl RenderThreadState {
                 let mut prior_state = self.detached_outputs.swap_remove(detached_idx);
                 let (mut output, mut output_state) = self.outputs.swap_remove(output_idx);
 
-                output_state.reseat(
-                    conn,
-                    &mut output,
-                    &mut prior_state,
-                    self,
-                );
+                output_state.reseat(conn, &mut output, &mut prior_state, self);
 
                 // Put the output back
                 self.outputs.insert(output_idx, (output, output_state));
             }
         }
     }
-
 }
 
 pub struct OutputState {
@@ -176,8 +174,14 @@ impl OutputState {
     ) {
         match &mut prior_state.render_state {
             OutputRenderStateVariety::Wallpaper(wp_state) => {
-                let new_state = OutputRenderStateVariety::Wallpaper(WallpaperRenderState::from_prior(
-                    conn, render_state, wp_state, new_output, self,
+                let new_state = OutputRenderStateVariety::Wallpaper(Box::new(
+                    WallpaperRenderState::from_prior(
+                        conn,
+                        render_state,
+                        wp_state,
+                        new_output,
+                        self,
+                    ),
                 ));
                 self.render_state = new_state;
             }
@@ -192,15 +196,45 @@ impl OutputState {
         }
     }
 
-    pub fn reinit(&mut self) {
-        todo!()
+    pub fn reinit(
+        &mut self,
+        conn: &mut Connection<RenderThreadState>,
+        output: &mut Output,
+        render_state: &mut RenderThreadState,
+    ) {
+        let old_render_state = self.render_state.take();
+
+        match old_render_state {
+            OutputRenderStateVariety::Wallpaper(mut wp_state) => {
+                let new_state = OutputRenderStateVariety::Wallpaper(Box::new(
+                    WallpaperRenderState::from_prior(
+                        conn,
+                        render_state,
+                        &mut wp_state,
+                        output,
+                        self,
+                    ),
+                ));
+                self.render_state = new_state;
+            }
+            OutputRenderStateVariety::None => {
+                self.render_state = OutputRenderStateVariety::None;
+            }
+        }
+        self.needs_reinit = false;
     }
 }
 
 pub enum OutputRenderStateVariety {
     None,
-    Wallpaper(WallpaperRenderState),
+    Wallpaper(Box<WallpaperRenderState>),
     //Lockscreen,
+}
+
+impl OutputRenderStateVariety {
+    pub fn take(&mut self) -> Self {
+        std::mem::replace(self, OutputRenderStateVariety::None)
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -341,7 +375,7 @@ impl WallpaperRenderState {
         // maybe not entirely thread-safe if the outputs vector is mutating but uhhhhhhhhhhhh :) later problem :)
         let file = tempfile::tempfile().expect("creating tempfile for shared mem failed");
 
-        let (image_width, image_height) = image_to_file(
+        let (image_width, image_height, effective_mode) = image_to_file(
             pandora.clone(),
             &mode,
             &file,
@@ -354,10 +388,11 @@ impl WallpaperRenderState {
 
         // make a pool that consists of a single image; map that onto a single buffer.
         // not bothering to do one big pool with one big map and keeping track of byte offsets.
-        let pool =
-            render_state.globals
-                .shm
-                .create_pool(conn, OwnedFd::from(file.try_clone().unwrap()), total_bytes);
+        let pool = render_state.globals.shm.create_pool(
+            conn,
+            OwnedFd::from(file.try_clone().unwrap()),
+            total_bytes,
+        );
         let buf = pool.create_buffer(
             conn,
             0,
@@ -377,7 +412,7 @@ impl WallpaperRenderState {
             image_height,
             output_state.width,
             output_state.height,
-            mode,
+            effective_mode,
         );
 
         let width = ScrollDimension::new(
@@ -419,7 +454,7 @@ impl WallpaperRenderState {
             image: image_path.to_string(),
             file,
             buffer: buf,
-            mode,
+            mode: effective_mode,
             slowdown,
         }
     }
@@ -439,7 +474,7 @@ impl WallpaperRenderState {
         output_state: &OutputState,
     ) -> Self {
         // todo: file reuse from unplugged
-        let new_state = WallpaperRenderState::new(
+        WallpaperRenderState::new(
             conn,
             render_state,
             &unplugged.image,
@@ -451,8 +486,7 @@ impl WallpaperRenderState {
                 unplugged.height.scroll_percent,
             )),
             unplugged.slowdown,
-        );
-        return new_state;
+        )
     }
 
     pub fn scroll(
@@ -493,7 +527,7 @@ impl WallpaperRenderState {
         let pandora = weak.upgrade().unwrap();
         verbose(pandora.clone(), "starting swap of image buffers");
 
-        let (image_width, image_height) = image_to_file(
+        let (image_width, image_height, effective_mode) = image_to_file(
             pandora.clone(),
             &new_mode,
             &new_file,
@@ -531,7 +565,7 @@ impl WallpaperRenderState {
             image_height,
             output_state.width,
             output_state.height,
-            new_mode,
+            effective_mode,
         );
 
         // Create new dimensions
@@ -572,7 +606,7 @@ impl WallpaperRenderState {
         self.buffer = new_buffer;
         self.file = new_file;
         self.image = new_image_path.to_string();
-        self.mode = new_mode;
+        self.mode = effective_mode;
         self.slowdown = slowdown;
         self.width = new_width_dim;
         self.height = new_height_dim;
@@ -719,7 +753,11 @@ pub fn initialize_wallpaper_outputs(
     let mut output_configs = Vec::new();
     for (output, output_state) in &state.outputs {
         let maybe_positions = initial_positions.get(&output_state.name);
-        if let Some(output_config) = config.outputs.iter().find(|oc| oc.name == output_state.name) {
+        if let Some(output_config) = config
+            .outputs
+            .iter()
+            .find(|oc| oc.name == output_state.name)
+        {
             let mode = output_config.mode.unwrap_or(RenderMode::Static);
             output_configs.push((
                 output.wl_output,
@@ -732,13 +770,17 @@ pub fn initialize_wallpaper_outputs(
                 output_state.done,
             ));
         } else {
-            println!("output {} not found in configs; skipping", output_state.name);
+            println!(
+                "output {} not found in configs; skipping",
+                output_state.name
+            );
         }
     }
 
-
     // Now process each output, creating render states one by one
-    for (wl_output, output_name, image_path, mode, scroll_percents, width, height, done) in output_configs {
+    for (wl_output, output_name, image_path, mode, scroll_percents, width, height, done) in
+        output_configs
+    {
         // Create a temporary OutputState for the constructor
         let temp_output_state = OutputState {
             name: output_name.clone(),
@@ -747,6 +789,7 @@ pub fn initialize_wallpaper_outputs(
             done,
             transform: wl_output::Transform::Normal,
             render_state: OutputRenderStateVariety::None,
+            needs_reinit: false,
         };
 
         let wallpaper_state = WallpaperRenderState::new(
@@ -761,8 +804,13 @@ pub fn initialize_wallpaper_outputs(
         );
 
         // Find the actual output state and update it
-        if let Some((_, output_state)) = state.outputs.iter_mut().find(|(_, os)| os.name == output_name) {
-            output_state.render_state = OutputRenderStateVariety::Wallpaper(wallpaper_state);
+        if let Some((_, output_state)) = state
+            .outputs
+            .iter_mut()
+            .find(|(_, os)| os.name == output_name)
+        {
+            output_state.render_state =
+                OutputRenderStateVariety::Wallpaper(Box::new(wallpaper_state));
         }
     }
 }
@@ -774,26 +822,49 @@ fn image_to_file(
     path: &str,
     width: u32,
     height: u32,
-) -> (i32, i32) {
-    // note: should wrap this and fall back to static if vert won't work, or infer it ourselves
-    let scale_to = match mode {
+) -> (i32, i32, RenderMode) {
+    let (img_width_orig, img_height_orig) = pandora.clone().load_image(path).unwrap();
+
+    // Check aspect ratios for ScrollVertical mode fallback
+    let effective_mode = match mode {
+        RenderMode::ScrollVertical => {
+            let image_aspect_ratio = img_width_orig as f64 / img_height_orig as f64;
+            let output_aspect_ratio = width as f64 / height as f64;
+
+            if image_aspect_ratio > output_aspect_ratio {
+                // Image is wider than output - fall back to Static mode
+                pandora.clone().log(
+                    "wallpaper",
+                    format!(
+                        "Falling back to Static mode: image {}x{} (aspect {:.2}) is wider than output {}x{} (aspect {:.2})",
+                        img_width_orig, img_height_orig, image_aspect_ratio,
+                        width, height, output_aspect_ratio
+                    )
+                );
+                RenderMode::Static
+            } else {
+                RenderMode::ScrollVertical
+            }
+        }
+        RenderMode::Static => RenderMode::Static,
+    };
+
+    let scale_to = match effective_mode {
         RenderMode::Static => (Some(width), Some(height)),
         RenderMode::ScrollVertical => (Some(width), None),
     };
 
-    pandora.clone().load_image(path).unwrap();
     let (img_width, img_height) = pandora.clone().read_img_to_file(path, f, scale_to).unwrap();
 
     if img_width < width || img_height < height {
-        panic!(
-            "INVALID CONFIG COMBINATION: image scaled to {img_width} x {img_height}, but output is {width} by {height}.\nSwitch to STATIC mode for this image or try scrolling in the other direction."
-        )
+        unreachable!(); // should be unreachable after this commit. Will remove in next cleanup assuming this WAI.
     }
+
     pandora.clone().verbose(
         "wallpaper",
         format!("file loaded and scaled to {img_width} x {img_height}"),
     );
-    (img_width as i32, img_height as i32)
+    (img_width as i32, img_height as i32, effective_mode)
 }
 
 fn wl_registry_cb(
@@ -856,21 +927,27 @@ fn wl_output_cb(ctx: EventCtx<RenderThreadState, WlOutput>) {
             let new_transform = geometry.transform;
 
             // Check if transform changed from/to a 90° or 270° rotation
-            let prev_is_rotated = matches!(prev_transform,
-                wl_output::Transform::_90 | wl_output::Transform::_270 |
-                wl_output::Transform::Flipped90 | wl_output::Transform::Flipped270);
-            let new_is_rotated = matches!(new_transform,
-                wl_output::Transform::_90 | wl_output::Transform::_270 |
-                wl_output::Transform::Flipped90 | wl_output::Transform::Flipped270);
+            let prev_is_rotated = matches!(
+                prev_transform,
+                wl_output::Transform::_90
+                    | wl_output::Transform::_270
+                    | wl_output::Transform::Flipped90
+                    | wl_output::Transform::Flipped270
+            );
+            let new_is_rotated = matches!(
+                new_transform,
+                wl_output::Transform::_90
+                    | wl_output::Transform::_270
+                    | wl_output::Transform::Flipped90
+                    | wl_output::Transform::Flipped270
+            );
 
             // Update the transform
             output_state.transform = new_transform;
 
             // If rotation state changed, swap width/height and flag for reseat
             if prev_is_rotated != new_is_rotated {
-                let old_width = output_state.width;
-                output_state.width = output_state.height;
-                output_state.height = old_width;
+                std::mem::swap(&mut output_state.width, &mut output_state.height);
                 // Flag this output for re-initialization after rotation
                 output_state.needs_reinit = true;
             }
