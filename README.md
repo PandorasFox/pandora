@@ -5,7 +5,7 @@ it is primary intended to be used with [niri](https://github.com/yaLTeR/niri) an
 but I'm open to implementing other compositor IPC agents in the future.
 
 ## installing
-An AUR package is available as [pandora-git](https://aur.archlinux.org/packages/pandora-git), tracking the `release` branch of this repo. Proper release tarballs and versioning will happen soon(tm). 
+An AUR package is available as [pandora-git](https://aur.archlinux.org/packages/pandora-git), tracking the `release` branch of this repo.
 
 Otherwise, you can install locally with cargo:
 

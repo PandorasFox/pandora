@@ -1009,7 +1009,7 @@ checksum = "48dd4f4a2c8405440fd0462561f0e5806bd0f77e86f51c761481bdd4018b545e"
 
 [[package]]
 name = "pandora"
-version = "0.0.2"
+version = "1.0.0"
 dependencies = [
  "bytemuck",
  "clap",
