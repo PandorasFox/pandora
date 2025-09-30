@@ -262,9 +262,6 @@ impl NiriProcessor {
             Event::WorkspaceActivated { id, .. } => {
                 self.gen_scroll_cmd_for_workspace_id(pandora.clone(), id)
             }
-            //Event::WindowFocusChanged { id: _id } => {
-            //    self.poke(pandora.clone());
-            //}
             Event::WindowLayoutsChanged { changes: _changes } => {
                 self.poke(pandora.clone());
             }

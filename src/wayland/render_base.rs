@@ -960,6 +960,7 @@ fn wl_output_cb(ctx: EventCtx<RenderThreadState, WlOutput>) {
         wl_output::Event::Done => {
             output_state.done = true;
             output.done = true;
+            ctx.state.reseat_needed = true;
         }
         _ => (),
     }
